@@ -13,7 +13,8 @@ const RE = {
   followed: /^(following|mengikuti|diikuti)$/i,
   reply: /^(reply|balas|balasan|komentar|komentari|beri komentar|tanggapi|comment)$/i,
   like: /^(like|unlike|suka|sukai|batal suka|tidak suka)$/i,
-  post: /^(post|posting|kirim)$/i,  // JANGAN tambah 'bagikan' = tombol Share
+  post: /^(post|posting|kirim|balas|reply|send)$/i,  // JANGAN tambah 'bagikan' = tombol Share
+  share: /(share|bagikan|repost|posting ulang|like|suka)/i,
   discard: /^(discard|buang|hapus)$/i,
   profileNav: /^(profile|profil)$/i,
   homeNav: /^(home|beranda)$/i,
@@ -175,14 +176,13 @@ async function doFollow(card, post) {
   const ok = await waitFor(() =>
     !findClickable(card, RE.follow) || findClickable(card, RE.followed) ||
     (dlg && document.contains(dlg) && findClickable(dlg, RE.followed)), 5000);
-  if (dlg && document.contains(dlg)) {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  }
   if (ok) {
     state.stats.followed++;
     log(`✅ Follow @${post.username}`);
-    return true;
   }
+  // Kartu/modal profil sering masih terbuka setelah klik Mengikuti → tutup dulu sebelum lanjut
+  await closeProfilePopup(btn);
+  if (ok) return true;
   log(`⚠️ Follow @${post.username} tidak terkonfirmasi`);
   return false;
 }
@@ -220,22 +220,40 @@ function describeButtons(card) {
 
 const visibleEditors = () => [...document.querySelectorAll(SEL.editor)].filter(visible);
 
-// Tombol kirim komentar = tombol ber-TEKS "Post"/"Posting" (bukan ikon), dicari dari container terdekat editor.
-// Sengaja tidak pakai aria-label supaya ikon Share/Bagikan di kartu postingan tidak ikut terpilih.
-function findTextButton(root, re) {
-  return [...root.querySelectorAll('[role="button"], button')]
-    .find((b) => visible(b) && re.test((b.innerText || '').trim())) || null;
+// Area composer = dialog, atau (inline) ancestor editor terbesar yang BELUM mencakup baris aksi kartu
+// (like/reply/repost/share). Dengan begitu ikon Share/Bagikan tidak pernah ikut jadi kandidat.
+function composerScope(editor, replyBtn) {
+  const dialog = editor.closest(SEL.dialog);
+  if (dialog) return dialog;
+  let scope = editor.parentElement;
+  for (let i = 0; i < 8; i++) {
+    const up = scope.parentElement;
+    if (!up || up === document.body || (replyBtn && up.contains(replyBtn))) break;
+    scope = up;
+  }
+  return scope;
 }
 
-function findSendButton(editor) {
-  const dialog = editor.closest(SEL.dialog);
-  if (dialog) return findTextButton(dialog, RE.post);
-  let el = editor.parentElement;
-  for (let i = 0; el && i < 10; i++, el = el.parentElement) {
-    const b = findTextButton(el, RE.post);
-    if (b) return b;
-  }
-  return null;
+const labelOf = (b) => ((b.innerText || '').trim() ||
+  b.getAttribute('aria-label') ||
+  b.querySelector('[aria-label]')?.getAttribute('aria-label') ||
+  b.querySelector('svg title')?.textContent || '').trim();
+
+function sendCandidates(editor, replyBtn) {
+  return [...composerScope(editor, replyBtn).querySelectorAll('[role="button"], button')]
+    .filter((b) => visible(b) && b !== replyBtn && !b.contains(editor) && !editor.contains(b));
+}
+
+// Prioritas: 1) tombol bertulisan Post/Posting/Kirim/Balas, 2) ikon dengan label yang sama
+function findSendButton(editor, replyBtn) {
+  const cands = sendCandidates(editor, replyBtn);
+  return cands.find((b) => RE.post.test((b.innerText || '').trim())) ||
+    cands.find((b) => RE.post.test(labelOf(b)) && !RE.share.test(labelOf(b))) || null;
+}
+
+function describeComposer(editor, replyBtn) {
+  const labels = sendCandidates(editor, replyBtn).map((b) => labelOf(b) || '(ikon tanpa label)');
+  return labels.length ? labels.slice(0, 10).join(' | ') : '(tidak ada tombol)';
 }
 
 const isEnabled = (b) => b.getAttribute('aria-disabled') !== 'true' && !b.disabled;
@@ -267,15 +285,16 @@ async function doComment(card, post) {
   await step();
 
   const sendBtn = await waitFor(() => {
-    const b = findSendButton(editor);
+    const b = findSendButton(editor, replyBtn);
     return b && isEnabled(b) ? b : null;
   }, 5000);
   if (sendBtn) {
     // klik langsung tanpa scroll supaya posisi dialog tidak bergeser
+    log(`@${post.username}: klik tombol "${labelOf(sendBtn)}"`);
     sendBtn.click();
   } else {
     // cadangan: Ctrl+Enter di kotak komentar
-    log(`@${post.username}: tombol Posting tidak ketemu, coba Ctrl+Enter`);
+    log(`@${post.username}: tombol Posting tidak ketemu (tombol di composer: ${describeComposer(editor, replyBtn)}), coba Ctrl+Enter`);
     editor.focus();
     for (const type of ['keydown', 'keyup']) {
       editor.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, ctrlKey: true, bubbles: true }));
@@ -303,16 +322,23 @@ const pressEscape = () => {
 };
 
 // Klik area kosong (bukan tombol/link) untuk menutup popup / kartu profil
+// Urutan: pojok kanan atas dulu (biasanya kosong), lalu pinggir kanan, lalu pojok kiri bawah
 function clickEmptySpot() {
   const spots = [
-    [window.innerWidth - 8, window.innerHeight / 2],
-    [window.innerWidth - 8, 80],
-    [8, window.innerHeight - 8]
+    [window.innerWidth - 10, 10],
+    [window.innerWidth - 10, 60],
+    [window.innerWidth - 10, window.innerHeight / 2],
+    [10, window.innerHeight - 10]
   ];
   for (const [x, y] of spots) {
     const el = document.elementFromPoint(x, y);
     if (!el || el.closest('a, button, [role="button"], [contenteditable="true"], input, textarea')) continue;
+    if (el.closest('[role="dialog"], [role="menu"]') || isFloatingCard(el)) continue;
     const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+    // pindahkan "mouse" ke titik ini dulu supaya hover card ikut tertutup
+    el.dispatchEvent(new PointerEvent('pointermove', opts));
+    el.dispatchEvent(new MouseEvent('mousemove', opts));
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
     el.dispatchEvent(new PointerEvent('pointerdown', opts));
     el.dispatchEvent(new MouseEvent('mousedown', opts));
     el.dispatchEvent(new PointerEvent('pointerup', opts));
@@ -323,7 +349,55 @@ function clickEmptySpot() {
   return false;
 }
 
-const openPopups = () => [...document.querySelectorAll('[role="dialog"], [role="menu"]')].filter(visible);
+// Kartu profil melayang (hover card) tidak selalu ber-role dialog. Cirinya: ada tombol
+// Ikuti/Mengikuti di luar kartu postingan, dan salah satu ancestor-nya position fixed/absolute.
+function isFloatingCard(el) {
+  for (let n = el, i = 0; n && n !== document.body && i < 12; n = n.parentElement, i++) {
+    const pos = getComputedStyle(n).position;
+    if (pos === 'fixed' || pos === 'absolute') return n;
+  }
+  return null;
+}
+
+function findProfileCards() {
+  const cards = new Set();
+  for (const b of document.querySelectorAll('[role="button"], button')) {
+    const t = (b.innerText || '').trim();
+    if (!visible(b) || !(RE.follow.test(t) || RE.followed.test(t))) continue;
+    if (b.closest(SEL.postCard) || b.closest('nav, header')) continue;
+    const floating = isFloatingCard(b);
+    if (floating) cards.add(floating);
+  }
+  return [...cards];
+}
+
+const openPopups = () => [
+  ...[...document.querySelectorAll('[role="dialog"], [role="menu"], [role="tooltip"]')].filter(visible),
+  ...findProfileCards()
+];
+
+function leaveHover(el) {
+  if (!el || !document.contains(el)) return;
+  const opts = { bubbles: true, cancelable: true, view: window };
+  for (const type of ['pointerout', 'pointerleave', 'mouseout', 'mouseleave']) {
+    el.dispatchEvent(new (type.startsWith('pointer') ? PointerEvent : MouseEvent)(type, opts));
+  }
+}
+
+// Tutup modal/kartu profil yang muncul setelah follow: lepas hover, Esc, klik pojok kanan atas
+async function closeProfilePopup(followBtn) {
+  for (let i = 0; i < 4; i++) {
+    if (!openPopups().length) return true;
+    leaveHover(followBtn);
+    pressEscape();
+    await sleep(300);
+    clickEmptySpot();
+    await sleep(rand(700, 1100));
+  }
+  const still = openPopups().length === 0;
+  if (!still) log('⚠️ Popup profil belum tertutup, lanjut cleanUp');
+  return still;
+}
 
 async function dismissPopups() {
   for (let i = 0; i < 3 && openPopups().length; i++) {
@@ -336,7 +410,7 @@ async function dismissPopups() {
     if (discard) { realClick(discard); await sleep(600); }
   }
   clickEmptySpot();
-  await sleep(300);
+  await sleep(500);
 }
 
 // Kembali ke Beranda tanpa reload (klik menu Beranda), kalau gagal pakai history.back / reload
