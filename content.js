@@ -217,16 +217,26 @@ function isMutualPost(text) {
 // memberi positif palsu.
 const alreadyFollowing = (card) => !!findClickable(card, RE.followed);
 
+// Alasan sebuah postingan harus dilewati, atau null kalau boleh diproses.
+// Syaratnya tunggal: tombol Follow HARUS ada di kartu. Kalau tidak ada, akun itu tidak bisa
+// difollow dari sini — dan kalau tidak bisa difollow, jangan dikomentari juga. Threads ternyata
+// tidak merender tombol apa pun di kartu feed untuk akun yang sudah diikuti (bukan berubah jadi
+// "Mengikuti"), jadi "tidak ada tombol" justru kasus sudah-difollow yang paling umum.
+// Keduanya dibedakan hanya untuk keperluan log.
+function skipReason(card) {
+  if (findClickable(card, RE.follow)) return null;
+  return alreadyFollowing(card) ? 'sudah difollow' : 'tombol follow tidak ada (kemungkinan sudah difollow)';
+}
+
 async function doFollow(card, post) {
   // Pemeriksaan kedua. Yang utama ada di loop pemindaian run(), tapi kartunya bisa berubah
   // antara pemindaian dan saat aksi dijalankan, jadi di sini dicek ulang.
-  if (alreadyFollowing(card)) return 'already';
-
-  const btn = findClickable(card, RE.follow);
-  if (!btn) {
-    log(`@${post.username}: tombol follow maupun Mengikuti tidak ketemu di kartu`);
-    return false;
+  const why = skipReason(card);
+  if (why) {
+    log(`⏭️ @${post.username}: ${why}, komentar dilewati`);
+    return 'skip';
   }
+  const btn = findClickable(card, RE.follow);
   realClick(btn);
   await step();
 
@@ -798,6 +808,8 @@ async function stop(reason) {
 async function run() {
   const me = myUsername();
   let idleScrolls = 0;
+  let noFollowSkips = 0;   // dipakai di alasan berhenti: "tidak ada postingan baru" menyesatkan
+                           // kalau sebenarnya banyak yang dilewati karena tombol follow tidak ada
   let actions = state.stats.processed || 0;
 
   while (running) {
@@ -812,14 +824,16 @@ async function run() {
       seen.add(post.id);
       if (processed.has(post.id) || post.username === me) continue;
       if (isMutualPost(post.text)) {
-        // Sudah difollow → jangan dikomentari lagi. `continue`, bukan `break`, supaya pemindaian
-        // langsung lanjut ke postingan berikutnya di layar yang sama tanpa perlu scroll ulang.
+        // Tidak bisa difollow → jangan dikomentari lagi. `continue`, bukan `break`, supaya
+        // pemindaian langsung lanjut ke postingan berikutnya di layar yang sama tanpa scroll ulang.
         // Sengaja TIDAK di-markProcessed: ini lewat, bukan aksi, jadi jangan menghabiskan kuota
         // riwayat 2000 — dan kalau deteksinya ternyata positif palsu, postingannya tidak hilang
         // selamanya. `seen` sudah mencegah pengecekan ulang selama halaman ini belum dimuat lagi.
-        if (alreadyFollowing(card)) {
-          log(`⏭️ @${post.username}: sudah difollow, lewati`);
+        const why = skipReason(card);
+        if (why) {
+          log(`⏭️ @${post.username}: ${why}, lewati`);
           state.stats.skipped++;
+          noFollowSkips++;
           continue;
         }
         target = { card, post };
@@ -844,7 +858,11 @@ async function run() {
       }
       // baru kembali terlihat: feed akan memuat lagi, jadi kuota idle scroll dimulai dari nol
       if (hiddenIdleLogged) { hiddenIdleLogged = false; idleScrolls = 0; }
-      if (++idleScrolls > MAX_IDLE_SCROLLS) return stop('Tidak ada postingan mutualan baru');
+      if (++idleScrolls > MAX_IDLE_SCROLLS) {
+        return stop(noFollowSkips
+          ? `Tidak ada postingan mutualan baru (${noFollowSkips} dilewati: tidak bisa difollow)`
+          : 'Tidak ada postingan mutualan baru');
+      }
       window.scrollBy({ top: window.innerHeight * 0.8, behavior: scrollBehavior() });
       await sleep(rand(2000, 3500));
       continue;
@@ -863,10 +881,8 @@ async function run() {
       await markProcessed(post.id);
       let skipComment = false;
       if (settings.doFollow && running) {
-        if ((await doFollow(card, post)) === 'already') {
-          log(`⏭️ @${post.username}: ternyata sudah difollow, komentar dilewati`);
-          skipComment = true;
-        }
+        // doFollow() mencatat alasannya sendiri, di sini cukup menuruti keputusannya
+        if ((await doFollow(card, post)) === 'skip') skipComment = true;
         if (limitDetected()) return stop('Terdeteksi limit dari Threads, istirahat dulu');
         await step();
         await cleanUp();

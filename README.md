@@ -30,7 +30,7 @@ Chrome juga bisa membuang tab background untuk menghemat memori. Kalau itu terja
 Bot akan:
 1. Membaca postingan di feed satu per satu
 2. Kalau teksnya mengandung kata kunci mutualan → **follow** pembuatnya
-   - Kalau akunnya **sudah kamu follow**, postingan itu **dilewati** — tidak difollow lagi, tidak dikomentari lagi, langsung lanjut ke postingan berikutnya. Di log muncul `⏭️ sudah difollow, lewati`, dan masuk hitungan "dilewati", bukan "diproses"
+   - Kalau **tombol follow tidak ada** di postingan itu — biasanya karena akunnya sudah kamu follow — postingan itu **dilewati**: tidak dikomentari, langsung lanjut ke postingan berikutnya. Di log muncul `⏭️ ... lewati`, dan masuk hitungan "dilewati", bukan "diproses"
 3. Menutup popup yang muncul — Esc → klik area kosong → tombol "Buang" → tombol tutup popup-nya — lalu kembali ke **Beranda** kalau sempat pindah halaman
 4. Mencari lagi postingan tadi, lalu **membalas** dengan komentar acak
 5. Menutup popup lagi, kembali ke Beranda, jeda, lalu **ulangi** ke postingan berikutnya
@@ -76,6 +76,7 @@ icons/          ikon extension
 | Bot berhenti: "Terdeteksi limit" | Akun sedang dibatasi Threads. Istirahat beberapa jam, lalu pakai jeda lebih panjang. |
 | Log: "popup masih nyangkut" | Ada jendela yang tidak mau tertutup setelah semua cara dicoba (Esc, scroll, klik area kosong, klik overlay, tombol tutup). Kalau popup-nya cuma kartu profil, bot menyembunyikannya sendiri dan lanjut. Kalau yang nyangkut dialog beneran, log menyebutkan isinya — tambahkan label tombol tutupnya ke `RE.close` (atau tombol konfirmasinya ke `RE.discard`) di atas `content.js`, lalu reload extension. |
 | Log: "popup disembunyikan paksa" | Normal, bukan error. Kartu profil yang menolak tertutup disembunyikan supaya tidak menghalangi langkah berikutnya. Hilang sendiri saat halaman di-refresh. |
+| **Semua** postingan dilewati dengan "tombol follow tidak ada", tidak ada yang diproses | Kemungkinan Threads mengubah label tombol follow-nya. Sesuaikan `RE.follow` di atas `content.js`, lalu reload extension. Bot sengaja memilih melewati semuanya daripada mengomentari akun yang sudah kamu follow. Alasan berhenti juga menyebutkan jumlahnya. |
 | "Bot tidak merespons (N menit terakhir diam)" | Tab Threads-nya kemungkinan dibuang Chrome untuk hemat memori. Refresh tab itu lalu Start lagi. Kalau sering kejadian, matikan Memory Saver untuk situs ini di `chrome://settings/performance`. |
 | Log: "teks komentar gagal dimasukkan" | Threads menolak teks yang disisipkan — biasanya karena tabnya tidak fokus. Komentar itu sengaja dibatalkan supaya tidak terkirim kosong. Coba jalankan dengan tab Threads terlihat. |
 | Log: "Tab tersembunyi & postingan yang ter-load habis" | Normal, bukan error. Feed Threads tidak memuat postingan baru selama tab tersembunyi. Buka tabnya sebentar, bot lanjut sendiri. |
