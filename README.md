@@ -18,14 +18,24 @@ Syarat: sudah **login** di Threads web. Bot selalu bekerja dari halaman **Berand
 3. Klik ikon **@** → atur pengaturan kalau perlu → **Start**
 4. Biarkan tab tetap terbuka. Klik **Stop** kapan saja.
 
+### Boleh pindah tab?
+Boleh — bot tetap jalan, dan sejak versi ini jeda/timer-nya sudah dibuat tahan terhadap penghematan Chrome di tab background.
+
+Satu hal yang **tidak** bisa diakali: Threads memuat postingan berikutnya hanya saat halamannya digambar di layar. Jadi selama tab tersembunyi, feed tidak menambah postingan baru dan bot cuma bisa menggarap yang sudah ter-load. Kalau habis, bot menunggu (tidak berhenti) sampai tabnya dibuka lagi.
+
+Paling aman kalau mau ditinggal lama: taruh tab Threads di **window sendiri**, lalu kerja di window lain sambil menyisakan sebagian window Threads tetap kelihatan. Jangan di-minimize dan jangan tertutup penuh — Chrome menganggap window yang tertimbun total sebagai tersembunyi.
+
+Chrome juga bisa membuang tab background untuk menghemat memori. Kalau itu terjadi, popup akan bilang bot tidak merespons dan menyuruh refresh tab.
+
 Bot akan:
 1. Membaca postingan di feed satu per satu
 2. Kalau teksnya mengandung kata kunci mutualan → **follow** pembuatnya
-3. Menutup popup yang muncul (Esc + klik area kosong) dan kembali ke **Beranda** kalau sempat pindah halaman
+3. Menutup popup yang muncul — Esc → klik area kosong → tombol "Buang" → tombol tutup popup-nya — lalu kembali ke **Beranda** kalau sempat pindah halaman
 4. Mencari lagi postingan tadi, lalu **membalas** dengan komentar acak
 5. Menutup popup lagi, kembali ke Beranda, jeda, lalu **ulangi** ke postingan berikutnya
 6. Scroll otomatis kalau tidak ada postingan yang cocok di layar
-7. Berhenti sendiri kalau: batas aksi tercapai, tidak ada postingan baru setelah 15 kali scroll, atau muncul peringatan limit dari Threads
+7. Berhenti sendiri kalau: batas aksi tercapai, tidak ada postingan baru setelah 15 kali scroll, muncul peringatan limit dari Threads, atau ada jendela/dialog yang menutupi halaman dan tidak bisa ditutup
+8. Setelah berhenti (termasuk kalau kamu klik **Stop**), bot menyapu popup yang masih tersisa supaya layar bersih — lihat log `🧹 Membersihkan ... popup sisa`
 
 Kalau kembali ke Beranda tanpa reload gagal, bot me-reload ke `threads.com/` dan **melanjutkan otomatis** (statistik tetap tersambung).
 
@@ -63,6 +73,10 @@ icons/          ikon extension
 | "Bot belum aktif di tab ini" | Refresh tab Threads. |
 | Log: "tombol follow/reply tidak ditemukan" | Threads mengubah tampilannya. Sesuaikan selector di objek `SEL` / `RE` di atas `content.js`, lalu reload extension. |
 | Bot berhenti: "Terdeteksi limit" | Akun sedang dibatasi Threads. Istirahat beberapa jam, lalu pakai jeda lebih panjang. |
+| Log: "popup masih nyangkut" / bot berhenti karena popup tidak bisa ditutup | Ada jendela yang tidak mau tertutup. Log menyebutkan isi popup-nya; tambahkan label tombol tutupnya ke `RE.close` (atau tombol konfirmasinya ke `RE.discard`) di atas `content.js`, lalu reload extension. Tutup popup-nya manual dan Start lagi. |
+| "Bot tidak merespons (N menit terakhir diam)" | Tab Threads-nya kemungkinan dibuang Chrome untuk hemat memori. Refresh tab itu lalu Start lagi. Kalau sering kejadian, matikan Memory Saver untuk situs ini di `chrome://settings/performance`. |
+| Log: "teks komentar gagal dimasukkan" | Threads menolak teks yang disisipkan — biasanya karena tabnya tidak fokus. Komentar itu sengaja dibatalkan supaya tidak terkirim kosong. Coba jalankan dengan tab Threads terlihat. |
+| Log: "Tab tersembunyi & postingan yang ter-load habis" | Normal, bukan error. Feed Threads tidak memuat postingan baru selama tab tersembunyi. Buka tabnya sebentar, bot lanjut sendiri. |
 
 ## ⚠️ Catatan
 Otomasi seperti ini melanggar ketentuan Threads/Meta dan bisa membuat akun kena limit atau diblokir. Pakai jeda yang wajar dan jumlah aksi kecil. Risiko sepenuhnya ditanggung pengguna.

@@ -87,6 +87,26 @@ async function refreshRunning() {
   }
 }
 
+// Denyut nadi: `ping` cuma membuktikan content script-nya ADA, bukan bahwa loop-nya MAJU.
+// Chrome bisa membuang tab background (Memory Saver) atau menahannya sampai nyaris diam, dan
+// tanpa ini popup akan terus memasang "Berjalan..." padahal sudah tidak ada yang bekerja.
+// Ambangnya longgar: bot berdenyut ~20 detik sekali, atau ~60 detik kalau timernya ditahan Chrome.
+const STALE_MS = 3 * 60 * 1000;
+
+async function checkAlive() {
+  const { botState, heartbeat } = await chrome.storage.local.get(['botState', 'heartbeat']);
+  if (!botState?.running || !heartbeat) return;
+  const idle = Date.now() - heartbeat;
+  if (idle < STALE_MS) return;
+  const mins = Math.round(idle / 60000);
+  setStatus(`Bot tidak merespons (${mins} menit terakhir diam). Refresh tab Threads.`, 'error');
+  $('start').disabled = false;
+  $('stop').disabled = true;
+}
+
+// popup adalah halaman aktif, jadi intervalnya tidak ditahan Chrome. Berhenti sendiri saat popup ditutup.
+setInterval(checkAlive, 5000);
+
 $('start').onclick = async () => {
   try {
     await saveSettings();
@@ -134,4 +154,5 @@ chrome.storage.onChanged.addListener((changes) => {
   if (!isRunning && data.botState?.reason && $('status').className.trim() === 'status') {
     setStatus('Berhenti: ' + data.botState.reason);
   }
+  await checkAlive();   // jangan tunggu interval pertama kalau tab-nya sudah lama diam
 })();

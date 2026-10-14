@@ -16,6 +16,7 @@ const RE = {
   post: /^(post|posting|kirim|balas|reply|send)$/i,  // JANGAN tambah 'bagikan' = tombol Share
   share: /(share|bagikan|repost|posting ulang|like|suka)/i,
   discard: /^(discard|buang|hapus)$/i,
+  close: /^(close|tutup|dismiss|batal|cancel|kembali|back|x)$/i,
   profileNav: /^(profile|profil)$/i,
   homeNav: /^(home|beranda)$/i,
   login: /^(log in|masuk|login)$/i,
@@ -25,6 +26,8 @@ const STEP_MIN = 1000, STEP_MAX = 3000;
 const MAX_IDLE_SCROLLS = 15;
 
 let running = false;
+let reloading = false;   // true kalau goHome() sudah memutuskan reload halaman
+let hiddenIdleLogged = false;   // supaya log "menunggu tab dibuka" tidak diulang tiap siklus
 let settings = null;
 let state = null;
 let processed = new Set();
@@ -34,25 +37,77 @@ const seen = new Set();
 const rand = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+// Chrome menahan timer di tab tersembunyi: ~1 detik, dan setelah tab tersembunyi 5 menit jadi
+// ~1x per MENIT ("intensive throttling"). Hukuman 1x/menit itu hanya menyasar timer BERANTAI —
+// setTimeout yang dipanggil dari dalam callback timer menaikkan "nesting level". Dengan memantul
+// lewat MessageChannel dulu (macrotask yang tidak diratakan), nesting level balik ke 0 sehingga
+// timernya cuma kena perataan 1 detik. JANGAN pakai setTimeout telanjang untuk jeda berulang.
+const chan = new MessageChannel();
+const tick = () => new Promise((r) => { chan.port1.onmessage = r; chan.port2.postMessage(0); });
+async function delay(ms) {
+  await tick();
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 async function sleep(ms) {
   const end = Date.now() + ms;
   while (running && Date.now() < end) {
-    await new Promise((r) => setTimeout(r, Math.min(300, end - Date.now())));
+    await delay(Math.min(300, end - Date.now()));
+    beat();
   }
 }
 const step = () => sleep(rand(STEP_MIN, STEP_MAX));
 
+// Jeda yang TIDAK peduli `running`. Hanya untuk sapuan popup setelah bot berhenti:
+// di sana sleep() akan langsung lewat sehingga Esc/klik tidak diberi waktu bereaksi.
+const hold = (ms) => delay(ms);
+
+// Tunggu sampai fn() bernilai truthy. Digerakkan MutationObserver, bukan polling: callback
+// observer datang sebagai microtask setelah DOM berubah, jadi jalur SUKSES sama sekali tidak
+// bergantung timer — itulah yang membuat ini tetap bekerja di tab tersembunyi. Poll delay(250)
+// tetap ada sebagai jaring untuk kondisi yang bukan mutasi DOM (mis. isHome() yang baca location).
 async function waitFor(fn, timeout = 8000) {
   const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const v = fn();
-    if (v) return v;
-    await new Promise((r) => setTimeout(r, 250));
+  const first = fn();
+  if (first) return first;
+
+  // `wake` harus di-arm ulang tiap kali dipicu: promise yang sudah resolve akan selalu menang
+  // lomba berikutnya, dan itu membuat loop ini berputar tanpa jeda sampai batas waktu.
+  let wake, arm;
+  const rearm = () => { wake = new Promise((r) => { arm = r; }); };
+  rearm();
+
+  const obs = new MutationObserver(() => arm());
+  obs.observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, characterData: true
+  });
+  try {
+    while (Date.now() < end) {
+      await Promise.race([wake, delay(Math.min(250, end - Date.now()))]);
+      rearm();          // di-arm SEBELUM fn() supaya mutasi yang datang setelahnya tidak hilang
+      const v = fn();
+      if (v) return v;
+    }
+  } finally {
+    obs.disconnect();
   }
   return null;
 }
 
 const visible = (el) => !!el && el.getClientRects().length > 0;
+
+// Scroll mulus digerakkan animation frame, dan itu tidak jalan di tab tersembunyi — di sana
+// scroll-nya bisa tidak pernah selesai. Jadi mulus kalau terlihat, instan kalau tersembunyi.
+const scrollBehavior = () => (document.hidden ? 'auto' : 'smooth');
+
+// Denyut nadi: popup memakainya untuk membedakan "loop masih maju" dari "tab sudah dibuang Chrome".
+// Ditulis dari dalam loop sleep() karena itu yang selalu berdenyut, bahkan selama jeda 90 detik.
+let lastBeat = 0;
+function beat() {
+  if (!running || Date.now() - lastBeat < 20000) return;
+  lastBeat = Date.now();
+  chrome.storage.local.set({ heartbeat: lastBeat });
+}
 
 // Cari elemen yang aria-label / <title> svg / teksnya cocok dengan regex, kembalikan elemen yang bisa diklik.
 function findClickable(root, re) {
@@ -74,7 +129,7 @@ function findClickable(root, re) {
 }
 
 function realClick(el) {
-  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
   const opts = { bubbles: true, cancelable: true, view: window };
   el.dispatchEvent(new PointerEvent('pointerdown', opts));
   el.dispatchEvent(new MouseEvent('mousedown', opts));
@@ -258,6 +313,25 @@ function describeComposer(editor, replyBtn) {
 
 const isEnabled = (b) => b.getAttribute('aria-disabled') !== 'true' && !b.disabled;
 
+// Tulis teks ke composer dan PASTIKAN benar-benar masuk sebelum tombol kirim diklik.
+// execCommand bergantung pada selection/focus dokumen, jadi di tab yang tidak fokus dia bisa
+// gagal diam-diam — dan tanpa verifikasi bot akan menekan kirim pada composer kosong.
+async function typeInto(editor, text) {
+  const landed = () => (editor.innerText || '').includes(text);
+
+  editor.focus();
+  document.execCommand('insertText', false, text);
+  if (await waitFor(landed, 2000)) return true;
+
+  // Cadangan: beforeinput sintetis. Editor Threads berbasis Lexical membaca event.data.
+  log('✏️ execCommand tidak menulis apa pun, coba beforeinput');
+  editor.focus();
+  editor.dispatchEvent(new InputEvent('beforeinput', {
+    inputType: 'insertText', data: text, bubbles: true, cancelable: true
+  }));
+  return !!(await waitFor(landed, 2000));
+}
+
 async function doComment(card, post) {
   const replyBtn = findClickable(card, RE.reply) || findReplyByPosition(card);
   if (!replyBtn) {
@@ -280,8 +354,11 @@ async function doComment(card, post) {
   await step();
 
   const text = pick(settings.comments).replace(/\{username\}/g, '@' + post.username);
-  editor.focus();
-  document.execCommand('insertText', false, text);
+  if (!(await typeInto(editor, text))) {
+    log(`@${post.username}: teks komentar gagal dimasukkan, komentar dibatalkan`);
+    await closeComposer();
+    return false;
+  }
   await step();
 
   const sendBtn = await waitFor(() => {
@@ -328,12 +405,18 @@ function clickEmptySpot() {
     [window.innerWidth - 10, 10],
     [window.innerWidth - 10, 60],
     [window.innerWidth - 10, window.innerHeight / 2],
+    [10, window.innerHeight / 2],
+    [window.innerWidth - 10, window.innerHeight - 10],
     [10, window.innerHeight - 10]
   ];
+  // Tolak titik yang jatuh DI DALAM popup yang sedang terbuka. Jangan pakai isFloatingCard() di
+  // sini: fungsi itu cuma mencari ancestor fixed/absolute mana pun, dan chrome halaman Threads
+  // sendiri (header/sidebar) posisinya fixed — semua titik bisa tertolak dan fungsi ini gagal diam-diam.
+  const popups = openPopups();
   for (const [x, y] of spots) {
     const el = document.elementFromPoint(x, y);
     if (!el || el.closest('a, button, [role="button"], [contenteditable="true"], input, textarea')) continue;
-    if (el.closest('[role="dialog"], [role="menu"]') || isFloatingCard(el)) continue;
+    if (popups.some((p) => p === el || p.contains(el))) continue;
     const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
     // pindahkan "mouse" ke titik ini dulu supaya hover card ikut tertutup
     el.dispatchEvent(new PointerEvent('pointermove', opts));
@@ -371,10 +454,33 @@ function findProfileCards() {
   return [...cards];
 }
 
-const openPopups = () => [
-  ...[...document.querySelectorAll('[role="dialog"], [role="menu"], [role="tooltip"]')].filter(visible),
-  ...findProfileCards()
-];
+const POPUP_ROLES = '[role="dialog"], [role="menu"], [role="tooltip"], [role="alert"], [aria-modal="true"]';
+
+// Popup = dialog/menu/tooltip/alert/modal, kartu profil melayang, atau composer yang masih berisi teks.
+// Composer KOSONG tidak dihitung: kotak tulis di Beranda selalu ada, kalau ikut terhitung maka
+// dismissPopups() akan looping dan menulis warning palsu setiap siklus. Editor yang ada isinya
+// hanya bisa berasal dari doComment() yang belum selesai.
+function openPopups() {
+  const found = new Set([
+    ...[...document.querySelectorAll(POPUP_ROLES)].filter(visible),
+    ...findProfileCards(),
+    ...visibleEditors().filter((e) => (e.innerText || '').trim())
+  ]);
+  // buang node yang bersarang di dalam node lain supaya jumlah & isi log tidak menggelembung
+  const all = [...found];
+  return all.filter((el) => !all.some((o) => o !== el && o.contains(el)));
+}
+
+// Dipakai di log kalau popup tidak mau tertutup, supaya label aslinya bisa ditambahkan ke RE.close / RE.discard
+function describePopup(el) {
+  const role = el.getAttribute('role') ||
+    (el.getAttribute('aria-modal') === 'true' ? 'modal' : el.isContentEditable ? 'composer' : 'melayang');
+  const labels = [...new Set([...el.querySelectorAll('[aria-label], svg title')]
+    .map((e) => (e.getAttribute('aria-label') || e.textContent || '').trim())
+    .filter(Boolean))].slice(0, 8);
+  const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+  return `${role}${labels.length ? ` [${labels.join(' | ')}]` : ''}${text ? ` "${text}"` : ''}`;
+}
 
 function leaveHover(el) {
   if (!el || !document.contains(el)) return;
@@ -399,18 +505,56 @@ async function closeProfilePopup(followBtn) {
   return still;
 }
 
-async function dismissPopups() {
-  for (let i = 0; i < 3 && openPopups().length; i++) {
+// Popup yang betul-betul menghalangi aksi berikutnya. Kartu profil melayang & tooltip
+// menjengkelkan tapi tidak memblokir klik, jadi cukup dicatat dan bot boleh lanjut.
+const isBlockingPopup = (el) =>
+  el.matches('[role="dialog"], [role="menu"], [aria-modal="true"]') || el.isContentEditable;
+
+// Popup yang sudah dilaporkan dan ternyata tidak bisa ditutup. Tetap ikut openPopups() (supaya
+// clickEmptySpot tidak mengkliknya), tapi tidak dilawan & dicatat ulang tiap siklus.
+const stuck = new WeakSet();
+const freshPopups = () => openPopups().filter((el) => !stuck.has(el));
+
+// Tutup semua popup yang terbuka, bertingkat: Esc → klik area kosong → konfirmasi "Buang" →
+// (percobaan terakhir) tombol tutup milik popup itu sendiri. Mengembalikan true kalau akhirnya bersih.
+// `wait` diganti `hold` untuk sapuan setelah bot berhenti, karena sleep() langsung lewat kalau !running.
+const TRIES_DISMISS = 4;
+
+// force = true mengabaikan daftar `stuck`, dipakai sapuan terakhir yang tidak berlomba dengan apa pun.
+async function dismissPopups(wait = sleep, force = false) {
+  const targets = () => (force ? openPopups() : freshPopups());
+  for (let i = 0; i < TRIES_DISMISS && targets().length; i++) {
     pressEscape();
-    await sleep(400);
+    await wait(400);
     clickEmptySpot();
-    await sleep(600);
+    await wait(600);
     // composer yang masih ada isinya kadang minta konfirmasi "Buang"
     const discard = openPopups().map((d) => findClickable(d, RE.discard)).find(Boolean);
-    if (discard) { realClick(discard); await sleep(600); }
+    if (discard) { realClick(discard); await wait(600); }
+
+    // Langkah pamungkas: tombol tutup di dalam popup. Jangan menebak lewat posisi — kartu profil
+    // tidak punya tombol tutup, dan klik sembarangan di situ bisa pindah ke halaman profil orang.
+    if (i === TRIES_DISMISS - 1) {
+      for (const p of targets()) {
+        const close = findClickable(p, RE.close);
+        if (!close) continue;
+        const lbl = labelOf(close);
+        if (RE.post.test(lbl) || RE.share.test(lbl)) continue;   // jangan sampai Kirim/Bagikan terklik
+        log(`🧹 Klik tombol tutup "${lbl || 'tanpa label'}" di popup`);
+        realClick(close);
+        await wait(600);
+      }
+    }
   }
+  // dorongan terakhir untuk hover card yang tidak terdeteksi openPopups()
   clickEmptySpot();
-  await sleep(500);
+  await wait(500);
+
+  const left = targets();
+  if (!left.length) return true;
+  left.forEach((el) => stuck.add(el));   // laporkan sekali saja, jangan spam log tiap siklus
+  log(`⚠️ ${left.length} popup masih nyangkut: ${left.map(describePopup).join(' // ')}`);
+  return false;
 }
 
 // Kembali ke Beranda tanpa reload (klik menu Beranda), kalau gagal pakai history.back / reload
@@ -427,6 +571,7 @@ async function goHome() {
   // terakhir: reload ke Beranda, bot lanjut otomatis setelah halaman termuat
   await chrome.storage.local.set({ resume: { stats: state.stats } });
   log('↩️ Reload ke Beranda, bot lanjut otomatis...');
+  reloading = true;   // sapuan popup tidak perlu: reload menghapus semuanya
   location.assign('/');
   return false;
 }
@@ -443,12 +588,36 @@ async function findCard(postId) {
 }
 
 async function cleanUp() {
-  await dismissPopups();
+  if (!(await dismissPopups())) {
+    // Modal/menu/composer yang tidak mau tutup akan membuat semua klik berikutnya gagal.
+    // Lebih jujur berhenti dengan alasan jelas daripada terus menggiling tanpa hasil.
+    // detail tiap popup sudah dicatat dismissPopups(), di sini cukup alasan singkat untuk status popup
+    // `running` dicek supaya Stop manual tidak tertimpa alasan ini: kalau bot sudah berhenti,
+    // sleep() di dalam dismissPopups() langsung lewat sehingga kegagalannya palsu. finalSweep yang urus.
+    const blocking = running ? openPopups().filter(isBlockingPopup) : [];
+    if (blocking.length) {
+      const roles = [...new Set(blocking.map((el) => el.getAttribute('role') || 'composer'))].join(', ');
+      await stop(`Popup "${roles}" tidak bisa ditutup, lihat log`);
+      return;
+    }
+  }
   if (!isHome()) {
     const ok = await goHome();
     if (!ok) running = false; // halaman akan reload
     await dismissPopups();
   }
+}
+
+// Sapuan terakhir setelah loop selesai. Semua jalur keluar (batas aksi, idle scroll, limit,
+// Stop manual, error) bisa meninggalkan dialog composer / kartu profil menempel di layar,
+// dan tidak ada cleanUp() lagi setelah itu. Pakai hold(): running sudah false di titik ini.
+async function finalSweep() {
+  if (reloading || !state) return;
+  const open = openPopups();
+  if (!open.length) return;
+  log(`🧹 Membersihkan ${open.length} popup sisa...`);
+  if (await dismissPopups(hold, true)) log('✅ Popup sisa sudah tertutup');
+  await saveState();
 }
 
 // ---------- main loop ----------
@@ -480,15 +649,30 @@ async function run() {
     }
 
     if (!target) {
+      // Di tab tersembunyi, Threads tidak menambah postingan baru ke feed (pagination-nya
+      // dipicu IntersectionObserver yang ikut siklus rendering, dan itu dilewati untuk halaman
+      // tersembunyi). Jadi "tidak ada postingan baru" di situ kesimpulan yang salah — tunggu saja
+      // sampai tabnya dibuka lagi, jangan habiskan kuota idle scroll.
+      if (document.hidden) {
+        if (!hiddenIdleLogged) {
+          log('👁️ Tab tersembunyi & postingan yang ter-load habis. Menunggu tab dibuka lagi...');
+          hiddenIdleLogged = true;
+        }
+        window.scrollBy({ top: window.innerHeight * 0.8, behavior: scrollBehavior() });
+        await sleep(rand(5000, 10000));
+        continue;
+      }
+      // baru kembali terlihat: feed akan memuat lagi, jadi kuota idle scroll dimulai dari nol
+      if (hiddenIdleLogged) { hiddenIdleLogged = false; idleScrolls = 0; }
       if (++idleScrolls > MAX_IDLE_SCROLLS) return stop('Tidak ada postingan mutualan baru');
-      window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+      window.scrollBy({ top: window.innerHeight * 0.8, behavior: scrollBehavior() });
       await sleep(rand(2000, 3500));
       continue;
     }
     idleScrolls = 0;
 
     const { card, post } = target;
-    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    card.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
     card.style.outline = '3px solid #22c55e';
     await step();
 
@@ -506,7 +690,7 @@ async function run() {
       if (settings.doComment && running) {
         const fresh = document.contains(card) && visible(card) ? card : await findCard(post.id);
         if (fresh) {
-          fresh.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          fresh.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
           await step();
           await doComment(fresh, post);
         } else {
@@ -544,9 +728,18 @@ async function start(resume = null) {
     logs: resume ? (await chrome.storage.local.get('botState')).botState?.logs || [] : []
   };
   running = true;
+  lastBeat = 0;
+  beat();   // denyut awal, supaya popup tidak membaca heartbeat sesi lama sebagai "tidak merespons"
   log(resume ? '▶️ Lanjut setelah reload' : `▶️ Mulai${settings.dryRun ? ' (dry run)' : ''}`);
   if (!isHome()) log('🏠 Bukan di Beranda, kembali ke Beranda dulu...');
-  run().catch((e) => stop('Error: ' + e.message)).finally(saveState);
+  // finalSweep di .then(), bukan di dalam stop(): stop() juga dipanggil dari listener pesan
+  // (Stop manual) dan kerja async di sana akan berlomba dengan aksi yang sedang jalan.
+  // Menunggu run() selesai mengurai diri membuat sapuan ini menutup semua jalur keluar tepat sekali.
+  run()
+    .catch((e) => stop('Error: ' + e.message))
+    .then(finalSweep)
+    .catch((e) => console.log('[ThreadsBot] finalSweep gagal:', e))
+    .finally(saveState);
   return { ok: true };
 }
 
@@ -564,17 +757,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
+// Catat perubahan visibilitas supaya log menjelaskan kenapa bot melambat di tab tersembunyi.
+document.addEventListener('visibilitychange', () => {
+  if (!running || !state) return;
+  log(document.hidden
+    ? '👁️ Tab tersembunyi. Bot lanjut, tapi feed mungkin tidak memuat postingan baru.'
+    : '👁️ Tab terlihat lagi.');
+});
+
 // Lanjutkan otomatis kalau tadi bot me-reload halaman ke Beranda
 (async () => {
   const { resume } = await chrome.storage.local.get('resume');
-  if (!resume) return;
+  if (!resume) {
+    // Tidak ada `resume` tapi state bilang masih jalan → sesi sebelumnya mati bersama halamannya
+    // (tab dibuang Chrome, atau user reload sendiri). Jangan biarkan popup mengaku "Berjalan...".
+    const { botState } = await chrome.storage.local.get('botState');
+    if (botState?.running) {
+      await chrome.storage.local.set({
+        botState: { ...botState, running: false, reason: 'Halaman sempat dimuat ulang, bot berhenti' }
+      });
+    }
+    return;
+  }
   await chrome.storage.local.remove('resume');
   const fail = async (reason) => {
     const { botState } = await chrome.storage.local.get('botState');
     if (botState) await chrome.storage.local.set({ botState: { ...botState, running: false, reason } });
   };
   if (!(await waitFor(() => isHome() && getPosts().length, 15000))) return fail('Beranda tidak termuat setelah reload');
-  await new Promise((r) => setTimeout(r, 2000));
+  await delay(2000);
   const res = await start(resume);
   if (!res.ok) await fail(res.error);
 })();
