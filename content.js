@@ -236,7 +236,7 @@ async function doFollow(card, post) {
     log(`✅ Follow @${post.username}`);
   }
   // Kartu/modal profil sering masih terbuka setelah klik Mengikuti → tutup dulu sebelum lanjut
-  await closeProfilePopup(btn);
+  await closeProfilePopup(btn, card);
   if (ok) return true;
   log(`⚠️ Follow @${post.username} tidak terkonfirmasi`);
   return false;
@@ -392,9 +392,15 @@ async function doComment(card, post) {
 }
 
 // ---------- navigasi & bersih-bersih popup ----------
+// Escape ditembakkan ke activeElement, document, DAN ke tiap popup yang terbuka: sebagian
+// handler Threads terpasang di elemen popup-nya sendiri, bukan di document. keyup ikut dikirim
+// karena ada handler yang menunggu itu, bukan keydown.
 const pressEscape = () => {
-  for (const t of [document.activeElement || document.body, document]) {
-    t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+  const targets = [document.activeElement || document.body, document, ...openPopups()];
+  for (const t of targets) {
+    for (const type of ['keydown', 'keyup']) {
+      t.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    }
   }
 };
 
@@ -491,10 +497,13 @@ function leaveHover(el) {
 }
 
 // Tutup modal/kartu profil yang muncul setelah follow: lepas hover, Esc, klik pojok kanan atas
-async function closeProfilePopup(followBtn) {
+async function closeProfilePopup(followBtn, card) {
+  // Pemicu hover card biasanya avatar / tautan username di kartu, BUKAN tombol follow-nya.
+  // Mengirim mouseleave cuma ke tombol follow tidak akan menutup kartu yang dipicu avatar.
+  const triggers = [followBtn, ...(card ? card.querySelectorAll(SEL.profileLink) : [])];
   for (let i = 0; i < 4; i++) {
     if (!openPopups().length) return true;
-    leaveHover(followBtn);
+    triggers.forEach(leaveHover);
     pressEscape();
     await sleep(300);
     clickEmptySpot();
@@ -507,8 +516,17 @@ async function closeProfilePopup(followBtn) {
 
 // Popup yang betul-betul menghalangi aksi berikutnya. Kartu profil melayang & tooltip
 // menjengkelkan tapi tidak memblokir klik, jadi cukup dicatat dan bot boleh lanjut.
-const isBlockingPopup = (el) =>
-  el.matches('[role="dialog"], [role="menu"], [aria-modal="true"]') || el.isContentEditable;
+//
+// PENTING: kartu profil Threads juga memakai role="dialog" padahal cuma preview — tidak punya
+// tombol tutup, tidak aria-modal, dan biasanya hilang sendiri begitu kita mengklik di tempat lain.
+// Menghentikan sesi gara-gara itu terlalu galak. Jadi sebuah dialog baru dihitung memblokir kalau
+// ada buktinya memang modal: aria-modal, ada composer, atau ada tombol tutup/buang/kirim.
+function isBlockingPopup(el) {
+  if (el.isContentEditable || el.matches('[aria-modal="true"], [role="menu"]')) return true;
+  if (!el.matches('[role="dialog"]')) return false;
+  return !!(el.querySelector(SEL.editor) || findClickable(el, RE.close) ||
+    findClickable(el, RE.discard) || findClickable(el, RE.post));
+}
 
 // Popup yang sudah dilaporkan dan ternyata tidak bisa ditutup. Tetap ikut openPopups() (supaya
 // clickEmptySpot tidak mengkliknya), tapi tidak dilawan & dicatat ulang tiap siklus.
@@ -547,13 +565,16 @@ async function dismissPopups(wait = sleep, force = false) {
     }
   }
   // dorongan terakhir untuk hover card yang tidak terdeteksi openPopups()
-  clickEmptySpot();
+  const spotOk = clickEmptySpot();
   await wait(500);
 
   const left = targets();
   if (!left.length) return true;
   left.forEach((el) => stuck.add(el));   // laporkan sekali saja, jangan spam log tiap siklus
-  log(`⚠️ ${left.length} popup masih nyangkut: ${left.map(describePopup).join(' // ')}`);
+  // `area kosong` dicatat karena kalau tidak ada titik yang bisa diklik, itulah sebab utamanya —
+  // dan tanpa dilaporkan kegagalan clickEmptySpot() tidak kelihatan sama sekali dari log.
+  log(`⚠️ ${left.length} popup masih nyangkut (area kosong: ${spotOk ? 'ada' : 'TIDAK ADA'}): ` +
+    left.map(describePopup).join(' // '));
   return false;
 }
 
@@ -758,11 +779,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // Catat perubahan visibilitas supaya log menjelaskan kenapa bot melambat di tab tersembunyi.
+// Di-debounce dan hanya dicatat kalau keadaannya benar-benar berubah: log cuma menyimpan 20 baris,
+// dan pindah-pindah tab beberapa kali sudah cukup untuk mengusir baris-baris yang penting.
+let visTimer = null, visLogged = null;
 document.addEventListener('visibilitychange', () => {
   if (!running || !state) return;
-  log(document.hidden
-    ? '👁️ Tab tersembunyi. Bot lanjut, tapi feed mungkin tidak memuat postingan baru.'
-    : '👁️ Tab terlihat lagi.');
+  clearTimeout(visTimer);
+  visTimer = setTimeout(() => {
+    if (!running || !state || document.hidden === visLogged) return;
+    visLogged = document.hidden;
+    log(visLogged
+      ? '👁️ Tab tersembunyi. Bot lanjut, tapi feed mungkin tidak memuat postingan baru.'
+      : '👁️ Tab terlihat lagi.');
+  }, 3000);
 });
 
 // Lanjutkan otomatis kalau tadi bot me-reload halaman ke Beranda
