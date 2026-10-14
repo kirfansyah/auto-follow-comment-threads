@@ -2,6 +2,7 @@
 body { width: 340px; margin: 0; padding: 12px; font: 13px system-ui, sans-serif; background: #fff; color: #111; }
 h1 { font-size: 16px; margin: 0 0 8px; }
 h2 { font-size: 13px; margin: 12px 0 4px; }
+h3 { font-size: 12px; margin: 12px 0 2px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
 .status { padding: 6px 8px; border-radius: 6px; background: #f1f5f9; margin-bottom: 8px; }
 .status.running { background: #dcfce7; color: #166534; }
 .status.error { background: #fee2e2; color: #991b1b; }
@@ -10,8 +11,8 @@ h2 { font-size: 13px; margin: 12px 0 4px; }
 button { padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; cursor: pointer; font: inherit; }
 button.primary { background: #111; color: #fff; border-color: #111; }
 button:disabled { opacity: .5; cursor: default; }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; gap: 4px; margin: 8px 0; }
-.stats b { display: block; font-size: 16px; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); text-align: center; gap: 4px; margin: 8px 0; }
+.stats b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
 .stats span { font-size: 11px; color: #64748b; }
 details { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; }
 summary { cursor: pointer; font-weight: 600; }
@@ -20,3 +21,4 @@ label.check { display: flex; gap: 6px; align-items: center; }
 textarea, input[type=number] { width: 100%; margin-top: 2px; font: 12px monospace; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px; }
 #logs { list-style: none; padding: 0; margin: 0; max-height: 180px; overflow-y: auto; font-size: 11px; }
 #logs li { padding: 2px 0; border-bottom: 1px solid #f1f5f9; }
+.warn { margin-top: 4px; font-size: 11px; color: #991b1b; background: #fee2e2; padding: 4px 6px; border-radius: 4px; }

@@ -14,10 +14,15 @@ const THREADS_BOT_DEFAULTS = {
     "sudah follow ya, salam kenal! 👋",
     "done kak, follback yaa 🤝"
   ],
-  delayMin: 30,       // detik antar postingan
+  delayMin: 30,       // detik antar postingan, dipakai kedua mode (unfollow sama rawannya kena limit)
   delayMax: 90,
   maxActions: 20,     // maksimal postingan yang diproses per sesi
   doFollow: true,
   doComment: true,
-  dryRun: false
+  dryRun: false,
+
+  // --- mode unfollow ---
+  unfollowAfterDays: 3,   // tunggu sekian hari sebelum akun yang tidak follow back di-unfollow
+  maxUnfollows: 10,       // sengaja rendah: run pertama bisa menyasar akun yang difollow manual
+  whitelist: []           // username yang tidak boleh di-unfollow, tanpa '@'
 };

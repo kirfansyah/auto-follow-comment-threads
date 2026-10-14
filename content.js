@@ -19,6 +19,13 @@ const RE = {
   close: /^(close|tutup|dismiss|batal|cancel|kembali|back|x)$/i,
   profileNav: /^(profile|profil)$/i,
   homeNav: /^(home|beranda)$/i,
+  // Tautan daftar di halaman profil. followingNav SENGAJA dipisah dari `followed` walaupun
+  // dua-duanya cocok "Mengikuti": yang ini tautan navigasi di halaman profil, yang itu tombol
+  // di baris daftar. Konteksnya beda, jadi jangan digabung — menggabungkannya akan membuat
+  // pencarian tombol unfollow ikut menangkap tautan navigasi.
+  followersNav: /^(followers|pengikut)$/i,
+  followingNav: /^(following|mengikuti)$/i,
+  unfollowConfirm: /^(unfollow|berhenti mengikuti|batal ikuti|batal mengikuti)$/i,
   login: /^(log in|masuk|login)$/i,
   limited: /(try again later|coba lagi nanti|action blocked|tindakan diblokir|we limit how often|kami membatasi)/i
 };
@@ -26,6 +33,7 @@ const STEP_MIN = 1000, STEP_MAX = 3000;
 const MAX_IDLE_SCROLLS = 15;
 
 let running = false;
+let mode = 'follow';   // 'follow' | 'unfollow'
 let reloading = false;   // true kalau goHome() sudah memutuskan reload halaman
 let hiddenIdleLogged = false;   // supaya log "menunggu tab dibuka" tidak diulang tiap siklus
 let settings = null;
@@ -161,6 +169,18 @@ async function markProcessed(id) {
   await chrome.storage.local.set({ processed: arr });
 }
 
+// Catat KAPAN sebuah akun difollow bot ini. Dipakai mode unfollow untuk menghitung masa tunggu.
+// Hanya dipanggil setelah follow terkonfirmasi, bukan saat tombolnya baru diklik.
+async function markFollowed(username) {
+  const { followed = {} } = await chrome.storage.local.get('followed');
+  followed[username] = Date.now();
+  // batasi seperti `processed`: simpan 2000 entri terbaru
+  const trimmed = Object.fromEntries(
+    Object.entries(followed).sort((a, b) => b[1] - a[1]).slice(0, 2000)
+  );
+  await chrome.storage.local.set({ followed: trimmed });
+}
+
 // ---------- page checks ----------
 function myUsername() {
   for (const a of document.querySelectorAll(SEL.profileLink)) {
@@ -253,6 +273,7 @@ async function doFollow(card, post) {
     (dlg && document.contains(dlg) && findClickable(dlg, RE.followed)), 5000);
   if (ok) {
     state.stats.followed++;
+    await markFollowed(post.username);   // supaya mode unfollow tahu kapan ini difollow
     log(`✅ Follow @${post.username}`);
   }
   // Kartu/modal profil sering masih terbuka setelah klik Mengikuti → tutup dulu sebelum lanjut
@@ -738,6 +759,82 @@ async function goHome() {
   return false;
 }
 
+// ---------- daftar Followers / Following (mode unfollow) ----------
+
+// Ambil username dari href "/@user/..." apa pun.
+function userFromHref(a) {
+  const m = (a.getAttribute('href') || '').match(/^\/@([^/?#]+)/);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// Daftar Threads ter-virtualisasi: barisnya DIBUANG dari DOM saat di-scroll. Jadi elemen yang
+// bisa di-scroll harus dicari dulu, lalu username diakumulasi ke Set sambil jalan — membaca
+// sekali di akhir hanya akan mendapat potongan terakhir saja.
+function scrollContainer(from) {
+  for (let n = from, i = 0; n && n !== document.body && i < 12; n = n.parentElement, i++) {
+    if (n.scrollHeight > n.clientHeight + 20) return n;
+  }
+  return null;
+}
+
+// Kumpulkan semua username di daftar yang sedang terbuka. Berhenti setelah beberapa kali scroll
+// tanpa nama baru. Pakai sleep() supaya Stop tetap responsif (dan beat() ikut jalan dari dalamnya).
+async function scrapeList(label) {
+  const found = new Set();
+  let idle = 0;
+
+  for (let i = 0; i < 400 && running && idle <= 4; i++) {
+    const links = [...document.querySelectorAll(SEL.profileLink)].filter(visible);
+    const before = found.size;
+    for (const a of links) {
+      const u = userFromHref(a);
+      if (u) found.add(u);
+    }
+    if (found.size === before) idle++;
+    else { idle = 0; log(`📋 ${label}: ${found.size} akun...`); }
+
+    const box = scrollContainer(links[links.length - 1] || document.body);
+    if (box) box.scrollTop = box.scrollHeight;
+    else window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'auto' });
+    await sleep(rand(900, 1600));
+  }
+  return found;
+}
+
+// Buka halaman profil sendiri, lalu tautan daftar Followers / Following di dalamnya.
+// URL-nya tidak di-hardcode: tautannya diklik, supaya tetap jalan kalau Threads mengubah pola URL.
+async function openList(which) {
+  const re = which === 'followers' ? RE.followersNav : RE.followingNav;
+
+  const profile = findClickable(document, RE.profileNav);
+  if (!profile) return false;
+  realClick(profile);
+  if (!(await waitFor(() => findClickable(document, re), 10000))) return false;
+  await step();
+
+  const link = findClickable(document, re);
+  if (!link) return false;
+  realClick(link);
+  // daftar siap kalau sudah ada tautan profil orang lain yang terlihat
+  return !!(await waitFor(() => {
+    const us = [...document.querySelectorAll(SEL.profileLink)].filter(visible).map(userFromHref);
+    return us.filter(Boolean).length > 1;
+  }, 12000));
+}
+
+// Baris daftar untuk satu username, dicari ulang tiap kali: daftar bergeser setiap kali ada yang
+// di-unfollow, jadi referensi baris lama jadi stale — pola yang sama dengan findCard(postId).
+function findRow(username) {
+  for (const a of document.querySelectorAll(SEL.profileLink)) {
+    if (userFromHref(a) !== username || !visible(a)) continue;
+    // naik sampai ketemu ancestor yang juga memuat tombol Mengikuti-nya
+    for (let n = a.parentElement, i = 0; n && i < 8; n = n.parentElement, i++) {
+      if (findClickable(n, RE.followed)) return n;
+    }
+  }
+  return null;
+}
+
 // Cari ulang kartu postingan di feed (kartu lama bisa hilang setelah pindah halaman)
 async function findCard(postId) {
   for (let i = 0; i < 8; i++) {
@@ -803,6 +900,115 @@ async function stop(reason) {
   state.running = false;
   state.reason = reason;
   log(`⏹ Berhenti: ${reason}`);
+}
+
+// ---------- mode unfollow ----------
+
+// '@User' / 'user ' → 'user'. Daftar putih tidak peka huruf besar/kecil & '@' di depan.
+const cleanUser = (s) => s.trim().replace(/^@/, '').toLowerCase();
+
+// Siapa yang boleh di-unfollow: ada di daftar Following, TIDAK ada di daftar pengikut,
+// tidak ada di daftar putih, dan kalau kita tahu kapan difollow, sudah lewat masa tunggu.
+// Username tanpa catatan waktu = difollow manual atau sebelum fitur ini ada = dianggap lewat.
+function unfollowTargets(following, followers, followed, settings) {
+  const white = new Set((settings.whitelist || []).map(cleanUser).filter(Boolean));
+  const graceMs = Math.max(0, settings.unfollowAfterDays || 0) * 86400000;
+  const now = Date.now();
+
+  return [...following].filter((u) => {
+    if (followers.has(u)) return false;                 // dia follow back → biarkan
+    if (white.has(u)) return false;                     // daftar putih
+    const at = followed[u];
+    if (at && now - at < graceMs) return false;         // belum lewat masa tunggu
+    return true;
+  });
+}
+
+async function doUnfollow(username) {
+  const row = findRow(username);
+  if (!row) {
+    log(`@${username}: barisnya tidak ketemu di daftar, dilewati`);
+    return false;
+  }
+  const btn = findClickable(row, RE.followed);
+  if (!btn) {
+    log(`@${username}: tombol Mengikuti tidak ada di barisnya`);
+    return false;
+  }
+  realClick(btn);
+  await step();
+
+  // Threads biasanya minta konfirmasi "Berhenti Mengikuti" di dialog
+  const confirm = await waitFor(() => {
+    for (const d of document.querySelectorAll(SEL.dialog)) {
+      if (!visible(d)) continue;
+      const c = findClickable(d, RE.unfollowConfirm);
+      if (c) return c;
+    }
+    return null;
+  }, 4000);
+  if (confirm) { realClick(confirm); await step(); }
+
+  // Sukses kalau tombol Mengikuti di baris itu hilang / berubah jadi Ikuti.
+  // Lingkupnya baris, bukan document: daftar ini penuh tombol Mengikuti milik orang lain.
+  const ok = await waitFor(() => {
+    const r = findRow(username);
+    return !r || !!findClickable(r, RE.follow);
+  }, 6000);
+
+  await dismissPopups();
+  if (ok) {
+    state.stats.unfollowed++;
+    log(`🚫 Unfollow @${username}`);
+    return true;
+  }
+  log(`⚠️ Unfollow @${username} tidak terkonfirmasi`);
+  return false;
+}
+
+async function runUnfollow() {
+  if (!(await openList('followers'))) return stop('Daftar pengikut tidak bisa dibuka');
+  const followers = await scrapeList('Pengikut');
+  if (!running) return;
+  log(`📋 Pengikut: ${followers.size} akun`);
+
+  if (!(await openList('following'))) return stop('Daftar mengikuti tidak bisa dibuka');
+  const following = await scrapeList('Mengikuti');
+  if (!running) return;
+  log(`📋 Mengikuti: ${following.size} akun`);
+
+  const { followed = {} } = await chrome.storage.local.get('followed');
+  const targets = unfollowTargets(following, followers, followed, settings);
+
+  // Daftar sasaran dicatat SEBELUM ada yang diklik, supaya salah daftar putih masih bisa
+  // ketahuan dari log saat Dry run — bukan setelah akunnya hilang.
+  log(`🎯 ${targets.length} akun tidak follow back: ${targets.slice(0, 15).map((u) => '@' + u).join(', ')}${targets.length > 15 ? ` (+${targets.length - 15} lagi)` : ''}`);
+  if (!targets.length) return stop('Tidak ada akun yang perlu di-unfollow');
+
+  let done = 0;
+  for (const username of targets) {
+    if (!running) return;
+    if (done >= settings.maxUnfollows) return stop(`Batas ${settings.maxUnfollows} unfollow tercapai`);
+    if (limitDetected()) return stop('Terdeteksi limit dari Threads, istirahat dulu');
+
+    if (settings.dryRun) {
+      const row = findRow(username);
+      if (row) row.style.outline = '3px solid #ef4444';
+      log(`🔎 [Dry run] Akan di-unfollow: @${username}`);
+    } else {
+      await doUnfollow(username);
+      if (limitDetected()) return stop('Terdeteksi limit dari Threads, istirahat dulu');
+    }
+
+    done++;
+    state.stats.processed = done;
+    await saveState();
+
+    const wait = rand(settings.delayMin, settings.delayMax);
+    log(`⏳ Jeda ${wait} detik...`);
+    await sleep(wait * 1000);
+  }
+  return stop(`Selesai, ${state.stats.unfollowed} akun di-unfollow`);
 }
 
 async function run() {
@@ -914,28 +1120,31 @@ async function run() {
   }
 }
 
-async function start(resume = null) {
+async function start(resume = null, startMode = 'follow') {
   if (running) return { ok: false, error: 'Bot sudah berjalan' };
   if (!isLoggedIn()) return { ok: false, error: 'Belum login di Threads. Login dulu ya.' };
 
   const data = await chrome.storage.local.get(['settings', 'processed']);
   settings = { ...THREADS_BOT_DEFAULTS, ...(data.settings || {}) };
   processed = new Set(data.processed || []);
+  mode = resume ? 'follow' : startMode;   // resume hanya dipakai mode follow
   state = {
     running: true,
+    mode,
     reason: '',
-    stats: resume?.stats || { processed: 0, followed: 0, commented: 0, skipped: 0 },
+    stats: resume?.stats || { processed: 0, followed: 0, commented: 0, skipped: 0, unfollowed: 0 },
     logs: resume ? (await chrome.storage.local.get('botState')).botState?.logs || [] : []
   };
   running = true;
   lastBeat = 0;
   beat();   // denyut awal, supaya popup tidak membaca heartbeat sesi lama sebagai "tidak merespons"
-  log(resume ? '▶️ Lanjut setelah reload' : `▶️ Mulai${settings.dryRun ? ' (dry run)' : ''}`);
-  if (!isHome()) log('🏠 Bukan di Beranda, kembali ke Beranda dulu...');
+  log(resume ? '▶️ Lanjut setelah reload'
+    : `▶️ Mulai mode ${mode === 'unfollow' ? 'unfollow' : 'follow'}${settings.dryRun ? ' (dry run)' : ''}`);
+  if (mode === 'follow' && !isHome()) log('🏠 Bukan di Beranda, kembali ke Beranda dulu...');
   // finalSweep di .then(), bukan di dalam stop(): stop() juga dipanggil dari listener pesan
   // (Stop manual) dan kerja async di sana akan berlomba dengan aksi yang sedang jalan.
-  // Menunggu run() selesai mengurai diri membuat sapuan ini menutup semua jalur keluar tepat sekali.
-  run()
+  // Menunggu loop selesai mengurai diri membuat sapuan ini menutup semua jalur keluar tepat sekali.
+  (mode === 'unfollow' ? runUnfollow() : run())
     .catch((e) => stop('Error: ' + e.message))
     .then(finalSweep)
     .catch((e) => console.log('[ThreadsBot] finalSweep gagal:', e))
@@ -945,7 +1154,7 @@ async function start(resume = null) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'start') {
-    start().then(sendResponse);
+    start(null, msg.mode === 'unfollow' ? 'unfollow' : 'follow').then(sendResponse);
     return true;
   }
   if (msg.type === 'stop') {
@@ -953,7 +1162,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
   }
   if (msg.type === 'ping') {
-    sendResponse({ ok: true, running });
+    sendResponse({ ok: true, running, mode });
   }
 });
 

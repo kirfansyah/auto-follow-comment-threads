@@ -19,6 +19,9 @@ function fillForm(s) {
   $('doFollow').checked = s.doFollow;
   $('doComment').checked = s.doComment;
   $('dryRun').checked = s.dryRun;
+  $('whitelist').value = (s.whitelist || []).join('\n');
+  $('unfollowAfterDays').value = s.unfollowAfterDays;
+  $('maxUnfollows').value = s.maxUnfollows;
 }
 
 function readForm() {
@@ -32,7 +35,11 @@ function readForm() {
     maxActions: Math.max(1, +$('maxActions').value || THREADS_BOT_DEFAULTS.maxActions),
     doFollow: $('doFollow').checked,
     doComment: $('doComment').checked,
-    dryRun: $('dryRun').checked
+    dryRun: $('dryRun').checked,
+    // '@nama' -> 'nama', tidak peka huruf besar/kecil: content.js membandingkannya lowercase
+    whitelist: lines('whitelist').map((u) => u.replace(/^@/, '').toLowerCase()),
+    unfollowAfterDays: Math.max(0, +$('unfollowAfterDays').value || 0),
+    maxUnfollows: Math.max(1, +$('maxUnfollows').value || THREADS_BOT_DEFAULTS.maxUnfollows)
   };
 }
 
@@ -46,7 +53,7 @@ async function saveSettings() {
 
 function renderState(st) {
   if (!st) return;
-  for (const k of ['processed', 'followed', 'commented', 'skipped']) {
+  for (const k of ['processed', 'followed', 'commented', 'skipped', 'unfollowed']) {
     $('s-' + k).textContent = st.stats?.[k] ?? 0;
   }
   $('logs').innerHTML = '';
@@ -62,26 +69,31 @@ async function getThreadsTab() {
   return tab && THREADS_URL.test(tab.url || '') ? tab : null;
 }
 
-async function send(type) {
+async function send(type, mode) {
   const tab = await getThreadsTab();
   if (!tab) throw new Error('Buka threads.com di tab ini dulu.');
   try {
-    return await chrome.tabs.sendMessage(tab.id, { type });
+    return await chrome.tabs.sendMessage(tab.id, { type, mode });
   } catch {
     throw new Error('Bot belum aktif di tab ini. Refresh halaman Threads lalu coba lagi.');
   }
 }
 
+// Kedua tombol mode dinonaktifkan bersamaan: hanya satu loop yang boleh jalan sekaligus.
+function setRunning(on, runMode) {
+  $('start').disabled = on;
+  $('startUnfollow').disabled = on;
+  $('stop').disabled = !on;
+  if (on) setStatus(`Berjalan (mode ${runMode === 'unfollow' ? 'unfollow' : 'follow'})...`, 'running');
+}
+
 async function refreshRunning() {
   try {
     const res = await send('ping');
-    $('start').disabled = res.running;
-    $('stop').disabled = !res.running;
-    if (res.running) setStatus('Berjalan...', 'running');
+    setRunning(res.running, res.mode);
     return res.running;
   } catch (e) {
-    $('start').disabled = false;
-    $('stop').disabled = true;
+    setRunning(false);
     setStatus(e.message, 'error');
     return false;
   }
@@ -100,25 +112,25 @@ async function checkAlive() {
   if (idle < STALE_MS) return;
   const mins = Math.round(idle / 60000);
   setStatus(`Bot tidak merespons (${mins} menit terakhir diam). Refresh tab Threads.`, 'error');
-  $('start').disabled = false;
-  $('stop').disabled = true;
+  setRunning(false);
 }
 
 // popup adalah halaman aktif, jadi intervalnya tidak ditahan Chrome. Berhenti sendiri saat popup ditutup.
 setInterval(checkAlive, 5000);
 
-$('start').onclick = async () => {
+async function startMode(runMode) {
   try {
     await saveSettings();
-    const res = await send('start');
+    const res = await send('start', runMode);
     if (!res.ok) return setStatus(res.error, 'error');
-    setStatus('Berjalan...', 'running');
-    $('start').disabled = true;
-    $('stop').disabled = false;
+    setRunning(true, runMode);
   } catch (e) {
     setStatus(e.message, 'error');
   }
-};
+}
+
+$('start').onclick = () => startMode('follow');
+$('startUnfollow').onclick = () => startMode('unfollow');
 
 $('stop').onclick = async () => {
   try { await send('stop'); } catch (e) { setStatus(e.message, 'error'); }
@@ -141,8 +153,7 @@ chrome.storage.onChanged.addListener((changes) => {
   renderState(st);
   if (st && !st.running) {
     setStatus('Berhenti: ' + (st.reason || '-'));
-    $('start').disabled = false;
-    $('stop').disabled = true;
+    setRunning(false);
   }
 });
 

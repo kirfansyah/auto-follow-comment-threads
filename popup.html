@@ -10,6 +10,7 @@
   <div id="status" class="status">Siap</div>
   <div class="row">
     <button id="start" class="primary">Start</button>
+    <button id="startUnfollow">Unfollow</button>
     <button id="stop">Stop</button>
   </div>
 
@@ -18,6 +19,7 @@
     <div><b id="s-followed">0</b><span>follow</span></div>
     <div><b id="s-commented">0</b><span>komentar</span></div>
     <div><b id="s-skipped">0</b><span>dilewati</span></div>
+    <div><b id="s-unfollowed">0</b><span>unfollow</span></div>
   </div>
 
   <details>
@@ -36,6 +38,17 @@
     <label class="check"><input id="doFollow" type="checkbox"> Follow</label>
     <label class="check"><input id="doComment" type="checkbox"> Komentar</label>
     <label class="check"><input id="dryRun" type="checkbox"> Dry run (cuma deteksi, tanpa klik)</label>
+
+    <h3>Mode unfollow</h3>
+    <div class="warn">Mode ini menyasar <b>semua</b> akun yang tidak follow back — termasuk yang
+      kamu follow manual. Isi daftar putih dan jalankan <b>Dry run</b> dulu.</div>
+    <label>Daftar putih — tidak akan di-unfollow (satu username per baris)
+      <textarea id="whitelist" rows="4" placeholder="namateman&#10;akunfavorit"></textarea>
+    </label>
+    <div class="row">
+      <label>Unfollow setelah (hari)<input id="unfollowAfterDays" type="number" min="0"></label>
+      <label>Maks unfollow<input id="maxUnfollows" type="number" min="1"></label>
+    </div>
     <div class="row">
       <button id="save">Simpan</button>
       <button id="resetDefaults">Default</button>
