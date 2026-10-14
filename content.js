@@ -406,36 +406,93 @@ const pressEscape = () => {
 
 // Klik area kosong (bukan tombol/link) untuk menutup popup / kartu profil
 // Urutan: pojok kanan atas dulu (biasanya kosong), lalu pinggir kanan, lalu pojok kiri bawah
-function clickEmptySpot() {
-  const spots = [
-    [window.innerWidth - 10, 10],
-    [window.innerWidth - 10, 60],
-    [window.innerWidth - 10, window.innerHeight / 2],
-    [10, window.innerHeight / 2],
-    [window.innerWidth - 10, window.innerHeight - 10],
-    [10, window.innerHeight - 10]
-  ];
-  // Tolak titik yang jatuh DI DALAM popup yang sedang terbuka. Jangan pakai isFloatingCard() di
-  // sini: fungsi itu cuma mencari ancestor fixed/absolute mana pun, dan chrome halaman Threads
-  // sendiri (header/sidebar) posisinya fixed — semua titik bisa tertolak dan fungsi ini gagal diam-diam.
+const INTERACTIVE = 'a, button, [role="button"], [contenteditable="true"], input, textarea';
+const viewportArea = () => window.innerWidth * window.innerHeight;
+const spotList = () => [
+  [window.innerWidth - 10, 10],
+  [window.innerWidth - 10, 60],
+  [window.innerWidth - 10, window.innerHeight / 2],
+  [10, window.innerHeight / 2],
+  [window.innerWidth - 10, window.innerHeight - 10],
+  [10, window.innerHeight - 10]
+];
+
+function clickPoint(el, x, y) {
+  const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+  // pindahkan "mouse" ke titik ini dulu supaya hover card ikut tertutup
+  el.dispatchEvent(new PointerEvent('pointermove', opts));
+  el.dispatchEvent(new MouseEvent('mousemove', opts));
+  el.dispatchEvent(new MouseEvent('mouseover', opts));
+  el.dispatchEvent(new PointerEvent('pointerdown', opts));
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  el.dispatchEvent(new PointerEvent('pointerup', opts));
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.dispatchEvent(new MouseEvent('click', opts));
+}
+
+// Tahap 1: titik yang benar-benar di luar semua popup. Jangan pakai isFloatingCard() di sini:
+// fungsi itu cuma mencari ancestor fixed/absolute mana pun, dan chrome halaman Threads sendiri
+// (header/sidebar) posisinya fixed — semua titik bisa tertolak dan fungsi ini gagal diam-diam.
+function clickOutsideSpot() {
   const popups = openPopups();
-  for (const [x, y] of spots) {
+  for (const [x, y] of spotList()) {
     const el = document.elementFromPoint(x, y);
-    if (!el || el.closest('a, button, [role="button"], [contenteditable="true"], input, textarea')) continue;
+    if (!el || el.closest(INTERACTIVE)) continue;
     if (popups.some((p) => p === el || p.contains(el))) continue;
-    const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-    // pindahkan "mouse" ke titik ini dulu supaya hover card ikut tertutup
-    el.dispatchEvent(new PointerEvent('pointermove', opts));
-    el.dispatchEvent(new MouseEvent('mousemove', opts));
-    el.dispatchEvent(new MouseEvent('mouseover', opts));
-    el.dispatchEvent(new PointerEvent('pointerdown', opts));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new PointerEvent('pointerup', opts));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-    el.dispatchEvent(new MouseEvent('click', opts));
+    clickPoint(el, x, y);
     return true;
   }
   return false;
+}
+
+// Pada overlay selebar viewport, cari rect kartu yang benar-benar terlihat di tengahnya.
+function contentRect(popup) {
+  const big = viewportArea() * 0.8;
+  let best = null;
+  for (const el of popup.querySelectorAll('*')) {
+    const r = el.getBoundingClientRect();
+    const area = r.width * r.height;
+    if (!area || area > big) continue;
+    if (!best || area > best.width * best.height) best = r;
+  }
+  return best;
+}
+
+// Tahap 2: popup yang menutupi seluruh viewport tidak menyisakan "luar" sama sekali, jadi
+// tahap 1 pasti gagal. Jalan keluarnya justru mengklik OVERLAY-nya di area kosong di luar rect
+// kartu — itu persis gestur yang ditunggu handler outside-click mereka.
+function clickOverlaySpot() {
+  for (const p of openPopups()) {
+    const pr = p.getBoundingClientRect();
+    if (pr.width * pr.height < viewportArea() * 0.8) continue;
+    const card = contentRect(p);
+    for (const [x, y] of spotList()) {
+      if (card && x >= card.left && x <= card.right && y >= card.top && y <= card.bottom) continue;
+      const el = document.elementFromPoint(x, y);
+      if (!el || el.closest(INTERACTIVE)) continue;
+      clickPoint(el, x, y);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Tahap 3: banyak handler outside-click berbentuk
+//   document.addEventListener('mousedown', e => { if (!card.contains(e.target)) close(); })
+// dan menembakkan di documentElement membuat e.target dijamin di luar kartu.
+// CATATAN: listener React terpasang di root container, jadi event di documentElement (ancestor
+// dari root itu) TIDAK terlihat oleh handler React. Ini cuma menolong listener document biasa —
+// karena itu dia tingkat terakhir, jangan dipindah ke depan dengan harapan keliru.
+const clickDocument = () => clickPoint(document.documentElement, 5, 5);
+
+// Mengembalikan nama tahap yang dipakai (untuk log), atau null kalau tidak ada yang dilakukan.
+// Nilai string selalu truthy, jadi pemanggil yang memperlakukannya sebagai boolean tetap benar.
+function clickEmptySpot() {
+  if (clickOutsideSpot()) return 'luar';
+  if (!openPopups().length) return null;   // tidak ada popup, tidak perlu mengetuk lebih keras
+  if (clickOverlaySpot()) return 'overlay';
+  clickDocument();
+  return 'document';
 }
 
 // Kartu profil melayang (hover card) tidak selalu ber-role dialog. Cirinya: ada tombol
@@ -481,11 +538,35 @@ function openPopups() {
 function describePopup(el) {
   const role = el.getAttribute('role') ||
     (el.getAttribute('aria-modal') === 'true' ? 'modal' : el.isContentEditable ? 'composer' : 'melayang');
+  // Ukuran relatif viewport ikut dicatat: popup 100%x100% berarti dia overlay yang menutupi
+  // seluruh layar, dan itu menjelaskan kenapa tidak ada titik "di luar" yang bisa diklik.
+  const r = el.getBoundingClientRect();
+  const size = `${Math.round((r.width / window.innerWidth) * 100)}%x${Math.round((r.height / window.innerHeight) * 100)}%`;
   const labels = [...new Set([...el.querySelectorAll('[aria-label], svg title')]
     .map((e) => (e.getAttribute('aria-label') || e.textContent || '').trim())
     .filter(Boolean))].slice(0, 8);
   const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-  return `${role}${labels.length ? ` [${labels.join(' | ')}]` : ''}${text ? ` "${text}"` : ''}`;
+  return `${role} ${size}${labels.length ? ` [${labels.join(' | ')}]` : ''}${text ? ` "${text}"` : ''}`;
+}
+
+// Scroll kecil: hover card & popover umumnya bubar begitu halaman digeser. Paling murah dan
+// paling tidak berisiko, jadi dipakai di tingkat awal. Instan supaya posisi kartu tidak bergeser.
+function scrollNudge() {
+  window.scrollBy({ top: 1, behavior: 'auto' });
+  window.scrollBy({ top: -1, behavior: 'auto' });
+}
+
+// Pamungkas kalau semua cara halus gagal: sembunyikan node-nya. display:none dipilih (bukan
+// remove()) supaya masih reversibel dan struktur yang dipegang React tidak dirusak.
+function forceHide(el) {
+  if (isBlockingPopup(el)) return false;              // composer/konfirmasi jangan pernah dipaksa:
+                                                      // menyembunyikannya tanpa membatalkan state
+                                                      // justru membuat Threads bingung setelahnya
+  if (el.querySelector(SEL.postCard)) return false;   // memuat kartu postingan = bagian feed, bukan popup
+  const r = el.getBoundingClientRect();
+  if (r.width * r.height > viewportArea() * 0.6) return false;   // sebesar layar = overlay/layout
+  el.style.display = 'none';
+  return true;
 }
 
 function leaveHover(el) {
@@ -505,6 +586,7 @@ async function closeProfilePopup(followBtn, card) {
     if (!openPopups().length) return true;
     triggers.forEach(leaveHover);
     pressEscape();
+    scrollNudge();
     await sleep(300);
     clickEmptySpot();
     await sleep(rand(700, 1100));
@@ -541,10 +623,12 @@ const TRIES_DISMISS = 4;
 // force = true mengabaikan daftar `stuck`, dipakai sapuan terakhir yang tidak berlomba dengan apa pun.
 async function dismissPopups(wait = sleep, force = false) {
   const targets = () => (force ? openPopups() : freshPopups());
+  let spot = null;
   for (let i = 0; i < TRIES_DISMISS && targets().length; i++) {
     pressEscape();
+    scrollNudge();
     await wait(400);
-    clickEmptySpot();
+    spot = clickEmptySpot();
     await wait(600);
     // composer yang masih ada isinya kadang minta konfirmasi "Buang"
     const discard = openPopups().map((d) => findClickable(d, RE.discard)).find(Boolean);
@@ -565,16 +649,28 @@ async function dismissPopups(wait = sleep, force = false) {
     }
   }
   // dorongan terakhir untuk hover card yang tidak terdeteksi openPopups()
-  const spotOk = clickEmptySpot();
+  spot = clickEmptySpot() || spot;
   await wait(500);
 
   const left = targets();
   if (!left.length) return true;
-  left.forEach((el) => stuck.add(el));   // laporkan sekali saja, jangan spam log tiap siklus
-  // `area kosong` dicatat karena kalau tidak ada titik yang bisa diklik, itulah sebab utamanya —
-  // dan tanpa dilaporkan kegagalan clickEmptySpot() tidak kelihatan sama sekali dari log.
-  log(`⚠️ ${left.length} popup masih nyangkut (area kosong: ${spotOk ? 'ada' : 'TIDAK ADA'}): ` +
-    left.map(describePopup).join(' // '));
+
+  // Pamungkas: sembunyikan yang non-blocking. describePopup() dipanggil SEBELUM disembunyikan,
+  // karena innerText elemen ber-display:none sudah kosong.
+  const hidden = [];
+  for (const el of left) {
+    const desc = describePopup(el);
+    if (forceHide(el)) hidden.push(desc);
+  }
+  if (hidden.length) log(`🧹 ${hidden.length} popup disembunyikan paksa: ${hidden.join(' // ')}`);
+
+  const stillLeft = targets();
+  if (!stillLeft.length) return true;
+  stillLeft.forEach((el) => stuck.add(el));   // laporkan sekali saja, jangan spam log tiap siklus
+  // Tahap klik yang terpakai ikut dicatat: kalau null, berarti tidak ada titik yang bisa diklik
+  // sama sekali, dan itulah sebab utamanya — tanpa dilaporkan, kegagalan itu tidak kelihatan.
+  log(`⚠️ ${stillLeft.length} popup masih nyangkut (klik: ${spot || 'TIDAK ADA'}): ` +
+    stillLeft.map(describePopup).join(' // '));
   return false;
 }
 
