@@ -610,12 +610,30 @@ async function closeProfilePopup(followBtn, card) {
 // tombol tutup, tidak aria-modal, dan biasanya hilang sendiri begitu kita mengklik di tempat lain.
 // Menghentikan sesi gara-gara itu terlalu galak. Jadi sebuah dialog baru dihitung memblokir kalau
 // ada buktinya memang modal: aria-modal, ada composer, atau ada tombol tutup/buang/kirim.
-function isBlockingPopup(el) {
-  if (el.isContentEditable || el.matches('[aria-modal="true"], [role="menu"]')) return true;
-  if (!el.matches('[role="dialog"]')) return false;
-  return !!(el.querySelector(SEL.editor) || findClickable(el, RE.close) ||
-    findClickable(el, RE.discard) || findClickable(el, RE.post));
+// Mengembalikan ALASAN kalau popup ini menghalangi aksi berikutnya, atau null kalau tidak.
+// Alasannya dicatat di log: salah menilai di sini sudah dua kali menghentikan sesi tanpa perlu,
+// dan tanpa alasan yang tercatat penyebabnya tidak bisa dilacak.
+function blockingReason(el) {
+  // Composer selalu memblokir, dan diperiksa paling awal (dialog detail postingan punya composer
+  // sekaligus tombol follow, dan yang menentukan di situ adalah composer-nya).
+  if (el.isContentEditable || el.querySelector(SEL.editor)) return 'ada composer';
+
+  // Tanda POSITIF kartu profil: ada tombol Ikuti/Mengikuti, tidak ada composer. Diperiksa lebih
+  // dulu daripada pemeriksaan lain. Mengandalkan "tidak ada bukti modal" ternyata rapuh — di
+  // lapangan kartu 25%x32% berisi "188 pengikut / Mengikuti" tetap lolos sebagai blocking,
+  // lalu menghentikan sesi DAN membuat forceHide menolak menyembunyikannya.
+  if (findClickable(el, RE.follow) || findClickable(el, RE.followed)) return null;
+
+  if (el.matches('[aria-modal="true"]')) return 'aria-modal';
+  if (el.matches('[role="menu"]')) return 'menu';
+  if (!el.matches('[role="dialog"]')) return null;
+  if (findClickable(el, RE.close)) return 'ada tombol tutup';
+  if (findClickable(el, RE.discard)) return 'ada tombol buang';
+  if (findClickable(el, RE.post)) return 'ada tombol kirim';
+  return null;
 }
+
+const isBlockingPopup = (el) => !!blockingReason(el);
 
 // Popup yang sudah dilaporkan dan ternyata tidak bisa ditutup. Tetap ikut openPopups() (supaya
 // clickEmptySpot tidak mengkliknya), tapi tidak dilawan & dicatat ulang tiap siklus.
@@ -711,18 +729,33 @@ async function findCard(postId) {
   return null;
 }
 
+// Berhenti baru dilakukan setelah beberapa cleanUp berturut-turut terhalang. Menghentikan sesi
+// adalah reaksi termahal yang ada, dan sudah dua kali terbukti terlalu cepat memvonis — sementara
+// doComment() sendiri sudah menangani kegagalannya dengan rapi kalau memang terhalang.
+const MAX_BLOCKED_CLEANUPS = 3;
+let blockedCleanups = 0;
+
 async function cleanUp() {
-  if (!(await dismissPopups())) {
-    // Modal/menu/composer yang tidak mau tutup akan membuat semua klik berikutnya gagal.
-    // Lebih jujur berhenti dengan alasan jelas daripada terus menggiling tanpa hasil.
-    // detail tiap popup sudah dicatat dismissPopups(), di sini cukup alasan singkat untuk status popup
+  if (await dismissPopups()) {
+    blockedCleanups = 0;
+  } else {
     // `running` dicek supaya Stop manual tidak tertimpa alasan ini: kalau bot sudah berhenti,
     // sleep() di dalam dismissPopups() langsung lewat sehingga kegagalannya palsu. finalSweep yang urus.
-    const blocking = running ? openPopups().filter(isBlockingPopup) : [];
-    if (blocking.length) {
-      const roles = [...new Set(blocking.map((el) => el.getAttribute('role') || 'composer'))].join(', ');
-      await stop(`Popup "${roles}" tidak bisa ditutup, lihat log`);
-      return;
+    const blocking = running
+      ? openPopups().map((el) => [el, blockingReason(el)]).filter(([, r]) => r)
+      : [];
+    if (!blocking.length) {
+      blockedCleanups = 0;
+    } else {
+      blockedCleanups++;
+      const detail = blocking
+        .map(([el, r]) => `${el.getAttribute('role') || 'melayang'}: ${r}`)
+        .join(', ');
+      log(`⚠️ Popup menghalangi (${detail}) — ${blockedCleanups}/${MAX_BLOCKED_CLEANUPS}`);
+      if (blockedCleanups >= MAX_BLOCKED_CLEANUPS) {
+        await stop(`Popup tidak bisa ditutup (${detail})`);
+        return;
+      }
     }
   }
   if (!isHome()) {
