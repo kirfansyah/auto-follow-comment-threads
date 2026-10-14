@@ -559,13 +559,20 @@ function scrollNudge() {
 // Pamungkas kalau semua cara halus gagal: sembunyikan node-nya. display:none dipilih (bukan
 // remove()) supaya masih reversibel dan struktur yang dipegang React tidak dirusak.
 function forceHide(el) {
-  if (isBlockingPopup(el)) return false;              // composer/konfirmasi jangan pernah dipaksa:
-                                                      // menyembunyikannya tanpa membatalkan state
-                                                      // justru membuat Threads bingung setelahnya
-  if (el.querySelector(SEL.postCard)) return false;   // memuat kartu postingan = bagian feed, bukan popup
-  const r = el.getBoundingClientRect();
+  // Yang disembunyikan HARUS elemen yang ditandai popup oleh aplikasinya sendiri, bukan ancestor
+  // hasil heuristik. openPopups() menyimpan node terluar, dan findProfileCards() mengembalikan
+  // ancestor fixed/absolute — itu bisa berupa kontainer portal yang DIPAKAI BERSAMA. Kalau
+  // kontainer itu di-display:none lalu dialog composer dirender ke tempat yang sama, komentar
+  // akan gagal terus ("kotak komentar tidak muncul") sampai halaman di-refresh.
+  const node = el.matches(POPUP_ROLES) ? el : el.querySelector(POPUP_ROLES);
+  if (!node) return false;
+  if (isBlockingPopup(node)) return false;              // composer/konfirmasi jangan pernah dipaksa:
+                                                        // menyembunyikannya tanpa membatalkan state
+                                                        // justru membuat Threads bingung setelahnya
+  if (node.querySelector(SEL.postCard)) return false;   // memuat kartu postingan = bagian feed, bukan popup
+  const r = node.getBoundingClientRect();
   if (r.width * r.height > viewportArea() * 0.6) return false;   // sebesar layar = overlay/layout
-  el.style.display = 'none';
+  node.style.display = 'none';
   return true;
 }
 
