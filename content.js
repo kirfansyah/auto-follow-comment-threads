@@ -31,6 +31,11 @@ const RE = {
 };
 const STEP_MIN = 1000, STEP_MAX = 3000;
 const MAX_IDLE_SCROLLS = 15;
+// Kalau postingan yang ter-load habis, feed disegarkan dan bot lanjut mencari. Dibatasi dan
+// diberi jeda panjang: menyegarkan beruntun tidak akan memunculkan apa pun dan hanya
+// membuat pola aksesnya terlihat seperti bot.
+const MAX_FEED_REFRESH = 20;
+const FEED_WAIT_MIN = 60000, FEED_WAIT_MAX = 180000;
 
 let running = false;
 let mode = 'follow';   // 'follow' | 'unfollow'
@@ -752,7 +757,7 @@ async function goHome() {
   history.back();
   if (await waitFor(isHome, 6000)) { await sleep(rand(1500, 2500)); return true; }
   // terakhir: reload ke Beranda, bot lanjut otomatis setelah halaman termuat
-  await chrome.storage.local.set({ resume: { stats: state.stats } });
+  await chrome.storage.local.set({ resume: { stats: state.stats, refreshes: state.refreshes || 0 } });
   log('↩️ Reload ke Beranda, bot lanjut otomatis...');
   reloading = true;   // sapuan popup tidak perlu: reload menghapus semuanya
   location.assign('/');
@@ -833,6 +838,38 @@ function findRow(username) {
     }
   }
   return null;
+}
+
+// Segarkan feed Beranda supaya postingan baru muncul, dua tingkat seperti goHome():
+//
+// 1. Klik menu Beranda walau SUDAH di Beranda — Threads memuat ulang feed-nya tanpa reload
+//    halaman, jadi loop, `seen`, dan statistik tetap hidup. Ini yang dicoba lebih dulu.
+// 2. Kalau tidak ada satu pun ID postingan baru setelah itu, klik Beranda tidak menyegarkan
+//    apa pun. Reload halaman sungguhan, dan bot melanjutkan lewat `resume` seperti goHome().
+//
+// Mengembalikan false kalau halaman akan reload (pemanggil harus berhenti seperti pada goHome).
+async function refreshFeed(refreshes) {
+  const before = new Set(getPosts().map((c) => parsePost(c)?.id).filter(Boolean));
+
+  const nav = findClickable(document, RE.homeNav) ||
+    [...document.querySelectorAll('a[href="/"]')].find(visible);
+  if (nav) realClick(nav);
+  window.scrollTo({ top: 0, behavior: 'auto' });
+  await step();
+  await dismissPopups();
+
+  const gotNew = await waitFor(() => getPosts().some((c) => {
+    const p = parsePost(c);
+    return p && !before.has(p.id);
+  }), 10000);
+  if (gotNew) return true;
+
+  // `refreshes` ikut disimpan: tanpa itu penghitungnya nol lagi tiap reload dan batasnya tak berarti
+  await chrome.storage.local.set({ resume: { stats: state.stats, refreshes } });
+  reloading = true;
+  log('🔄 Klik Beranda tidak menyegarkan apa pun, reload halaman...');
+  location.assign('/');
+  return false;
 }
 
 // Cari ulang kartu postingan di feed (kartu lama bisa hilang setelah pindah halaman)
@@ -1014,6 +1051,7 @@ async function runUnfollow() {
 async function run() {
   const me = myUsername();
   let idleScrolls = 0;
+  let refreshes = state.refreshes || 0;   // lanjut dari sebelum reload
   let noFollowSkips = 0;   // dipakai di alasan berhenti: "tidak ada postingan baru" menyesatkan
                            // kalau sebenarnya banyak yang dilewati karena tombol follow tidak ada
   let actions = state.stats.processed || 0;
@@ -1065,9 +1103,23 @@ async function run() {
       // baru kembali terlihat: feed akan memuat lagi, jadi kuota idle scroll dimulai dari nol
       if (hiddenIdleLogged) { hiddenIdleLogged = false; idleScrolls = 0; }
       if (++idleScrolls > MAX_IDLE_SCROLLS) {
-        return stop(noFollowSkips
-          ? `Tidak ada postingan mutualan baru (${noFollowSkips} dilewati: tidak bisa difollow)`
-          : 'Tidak ada postingan mutualan baru');
+        // Postingan yang ter-load sudah habis. Daripada berhenti, tunggu sebentar lalu segarkan
+        // feed — tunggu DULU supaya ada waktu postingan baru terkumpul, menyegarkan langsung
+        // hanya akan memuat isi yang sama. Dibatasi supaya tidak menggedor Threads tanpa henti.
+        const skipNote = noFollowSkips ? ` (${noFollowSkips} dilewati: tidak bisa difollow)` : '';
+        if (refreshes >= MAX_FEED_REFRESH) {
+          return stop(`Tidak ada postingan mutualan baru setelah ${refreshes}x segarkan feed${skipNote}`);
+        }
+        refreshes++;
+        state.refreshes = refreshes;   // ikut tersimpan supaya batasnya selamat melewati reload
+
+        const wait = rand(FEED_WAIT_MIN, FEED_WAIT_MAX);
+        log(`🔄 Postingan habis. Tunggu ${Math.round(wait / 1000)} detik lalu segarkan feed (${refreshes}/${MAX_FEED_REFRESH})...`);
+        await sleep(wait);
+        if (!running) return;
+        if (!(await refreshFeed(refreshes))) return;   // halaman reload, lanjut lewat `resume`
+        idleScrolls = 0;
+        continue;
       }
       window.scrollBy({ top: window.innerHeight * 0.8, behavior: scrollBehavior() });
       await sleep(rand(2000, 3500));
@@ -1133,6 +1185,7 @@ async function start(resume = null, startMode = 'follow') {
     mode,
     reason: '',
     stats: resume?.stats || { processed: 0, followed: 0, commented: 0, skipped: 0, unfollowed: 0 },
+    refreshes: resume?.refreshes || 0,
     logs: resume ? (await chrome.storage.local.get('botState')).botState?.logs || [] : []
   };
   running = true;
