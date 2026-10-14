@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Threads Mutualan Bot</h1>
+
+  <div id="status" class="status">Siap</div>
+  <div class="row">
+    <button id="start" class="primary">Start</button>
+    <button id="stop">Stop</button>
+  </div>
+
+  <div class="stats">
+    <div><b id="s-processed">0</b><span>diproses</span></div>
+    <div><b id="s-followed">0</b><span>follow</span></div>
+    <div><b id="s-commented">0</b><span>komentar</span></div>
+    <div><b id="s-skipped">0</b><span>dilewati</span></div>
+  </div>
+
+  <details>
+    <summary>Pengaturan</summary>
+    <label>Kata kunci (satu per baris)
+      <textarea id="keywords" rows="5"></textarea>
+    </label>
+    <label>Template komentar (satu per baris, bisa pakai {username})
+      <textarea id="comments" rows="5"></textarea>
+    </label>
+    <div class="row">
+      <label>Jeda min (dtk)<input id="delayMin" type="number" min="5"></label>
+      <label>Jeda max (dtk)<input id="delayMax" type="number" min="5"></label>
+      <label>Maks aksi<input id="maxActions" type="number" min="1"></label>
+    </div>
+    <label class="check"><input id="doFollow" type="checkbox"> Follow</label>
+    <label class="check"><input id="doComment" type="checkbox"> Komentar</label>
+    <label class="check"><input id="dryRun" type="checkbox"> Dry run (cuma deteksi, tanpa klik)</label>
+    <div class="row">
+      <button id="save">Simpan</button>
+      <button id="resetDefaults">Default</button>
+      <button id="resetHistory">Reset riwayat</button>
+    </div>
+  </details>
+
+  <h2>Log</h2>
+  <ul id="logs"></ul>
+
+  <script src="defaults.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

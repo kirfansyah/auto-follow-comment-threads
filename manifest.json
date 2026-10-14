@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Threads Mutualan Bot",
+  "version": "1.0.0",
+  "description": "Auto follow & komentar di postingan Threads yang ngajak mutualan.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.threads.com/*",
+    "https://threads.com/*",
+    "https://www.threads.net/*",
+    "https://threads.net/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Threads Mutualan Bot",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.threads.com/*",
+        "https://threads.com/*",
+        "https://www.threads.net/*",
+        "https://threads.net/*"
+      ],
+      "js": [
+        "defaults.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
