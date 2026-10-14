@@ -30,6 +30,7 @@ Chrome juga bisa membuang tab background untuk menghemat memori. Kalau itu terja
 Bot akan:
 1. Membaca postingan di feed satu per satu
 2. Kalau teksnya mengandung kata kunci mutualan → **follow** pembuatnya
+   - Kalau akunnya **sudah kamu follow**, postingan itu **dilewati** — tidak difollow lagi, tidak dikomentari lagi, langsung lanjut ke postingan berikutnya. Di log muncul `⏭️ sudah difollow, lewati`, dan masuk hitungan "dilewati", bukan "diproses"
 3. Menutup popup yang muncul — Esc → klik area kosong → tombol "Buang" → tombol tutup popup-nya — lalu kembali ke **Beranda** kalau sempat pindah halaman
 4. Mencari lagi postingan tadi, lalu **membalas** dengan komentar acak
 5. Menutup popup lagi, kembali ke Beranda, jeda, lalu **ulangi** ke postingan berikutnya

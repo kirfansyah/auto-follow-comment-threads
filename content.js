@@ -211,10 +211,20 @@ function isMutualPost(text) {
 }
 
 // ---------- actions ----------
+// Sudah difollow kalau tombol Mengikuti/Following ADA di kartunya. Tanda positif, bukan
+// "tombol Follow tidak ketemu" — yang terakhir itu juga benar kalau selector-nya kebetulan rusak.
+// Lingkupnya WAJIB kartu, bukan document: Beranda punya tab feed "Following" yang akan
+// memberi positif palsu.
+const alreadyFollowing = (card) => !!findClickable(card, RE.followed);
+
 async function doFollow(card, post) {
+  // Pemeriksaan kedua. Yang utama ada di loop pemindaian run(), tapi kartunya bisa berubah
+  // antara pemindaian dan saat aksi dijalankan, jadi di sini dicek ulang.
+  if (alreadyFollowing(card)) return 'already';
+
   const btn = findClickable(card, RE.follow);
   if (!btn) {
-    log(`@${post.username}: tombol follow tidak ada (mungkin sudah follow)`);
+    log(`@${post.username}: tombol follow maupun Mengikuti tidak ketemu di kartu`);
     return false;
   }
   realClick(btn);
@@ -801,7 +811,20 @@ async function run() {
       if (!post || seen.has(post.id)) continue;
       seen.add(post.id);
       if (processed.has(post.id) || post.username === me) continue;
-      if (isMutualPost(post.text)) { target = { card, post }; break; }
+      if (isMutualPost(post.text)) {
+        // Sudah difollow → jangan dikomentari lagi. `continue`, bukan `break`, supaya pemindaian
+        // langsung lanjut ke postingan berikutnya di layar yang sama tanpa perlu scroll ulang.
+        // Sengaja TIDAK di-markProcessed: ini lewat, bukan aksi, jadi jangan menghabiskan kuota
+        // riwayat 2000 — dan kalau deteksinya ternyata positif palsu, postingannya tidak hilang
+        // selamanya. `seen` sudah mencegah pengecekan ulang selama halaman ini belum dimuat lagi.
+        if (alreadyFollowing(card)) {
+          log(`⏭️ @${post.username}: sudah difollow, lewati`);
+          state.stats.skipped++;
+          continue;
+        }
+        target = { card, post };
+        break;
+      }
       state.stats.skipped++;
     }
 
@@ -838,13 +861,17 @@ async function run() {
     } else {
       // tandai dulu supaya tidak diulang kalau halaman reload
       await markProcessed(post.id);
+      let skipComment = false;
       if (settings.doFollow && running) {
-        await doFollow(card, post);
+        if ((await doFollow(card, post)) === 'already') {
+          log(`⏭️ @${post.username}: ternyata sudah difollow, komentar dilewati`);
+          skipComment = true;
+        }
         if (limitDetected()) return stop('Terdeteksi limit dari Threads, istirahat dulu');
         await step();
         await cleanUp();
       }
-      if (settings.doComment && running) {
+      if (settings.doComment && running && !skipComment) {
         const fresh = document.contains(card) && visible(card) ? card : await findCard(post.id);
         if (fresh) {
           fresh.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
