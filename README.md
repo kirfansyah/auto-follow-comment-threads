@@ -35,7 +35,8 @@ Bot akan:
 4. Mencari lagi postingan tadi, lalu **membalas** dengan komentar acak
 5. Menutup popup lagi, kembali ke Beranda, jeda, lalu **ulangi** ke postingan berikutnya
 6. Scroll otomatis kalau tidak ada postingan yang cocok di layar
-7. Berhenti sendiri kalau: batas aksi tercapai, tidak ada postingan baru setelah 15 kali scroll, muncul peringatan limit dari Threads, atau ada jendela/dialog yang menutupi halaman dan tidak bisa ditutup
+7. Kalau setelah 15 kali scroll tidak ada mutualan baru, bot **refresh Beranda** (jeda 20–45 detik dulu) lalu lanjut otomatis, diulang sampai ketemu mutualan baru
+8. Berhenti sendiri kalau: batas aksi tercapai, 30 kali refresh beruntun tetap tidak ada mutualan baru, muncul peringatan limit dari Threads, atau ada jendela/dialog yang menutupi halaman dan tidak bisa ditutup
 8. Setelah berhenti (termasuk kalau kamu klik **Stop**), bot menyapu popup yang masih tersisa supaya layar bersih — lihat log `🧹 Membersihkan ... popup sisa`
 
 Kalau kembali ke Beranda tanpa reload gagal, bot me-reload ke `threads.com/` dan **melanjutkan otomatis** (statistik tetap tersambung).

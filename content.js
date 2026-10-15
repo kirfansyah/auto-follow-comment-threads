@@ -31,10 +31,16 @@ const RE = {
 };
 const STEP_MIN = 1000, STEP_MAX = 3000;
 const MAX_IDLE_SCROLLS = 15;
+// Feed habis tanpa mutualan baru → refresh Beranda supaya Threads memuat postingan baru.
+// Jeda sebelum refresh supaya tidak terlihat seperti spam reload; batas refresh beruntun
+// sebagai rem kalau memang tidak ada yang cocok (mis. kata kunci terlalu sempit).
+const REFRESH_WAIT_MIN = 20, REFRESH_WAIT_MAX = 45;   // detik
+const MAX_EMPTY_REFRESHES = 30;
 
 let running = false;
 let mode = 'follow';   // 'follow' | 'unfollow'
 let reloading = false;   // true kalau goHome() sudah memutuskan reload halaman
+let emptyRefreshes = 0;   // refresh beruntun tanpa menemukan mutualan; ikut dibawa lewat `resume`
 let hiddenIdleLogged = false;   // supaya log "menunggu tab dibuka" tidak diulang tiap siklus
 let settings = null;
 let state = null;
@@ -752,7 +758,7 @@ async function goHome() {
   history.back();
   if (await waitFor(isHome, 6000)) { await sleep(rand(1500, 2500)); return true; }
   // terakhir: reload ke Beranda, bot lanjut otomatis setelah halaman termuat
-  await chrome.storage.local.set({ resume: { stats: state.stats } });
+  await chrome.storage.local.set({ resume: { stats: state.stats, emptyRefreshes } });
   log('↩️ Reload ke Beranda, bot lanjut otomatis...');
   reloading = true;   // sapuan popup tidak perlu: reload menghapus semuanya
   location.assign('/');
@@ -1011,6 +1017,21 @@ async function runUnfollow() {
   return stop(`Selesai, ${state.stats.unfollowed} akun di-unfollow`);
 }
 
+// Reload Beranda untuk mendapatkan feed baru; bot lanjut otomatis lewat `resume` (IIFE di bawah).
+async function refreshForNewPosts(skipped) {
+  emptyRefreshes++;
+  const wait = rand(REFRESH_WAIT_MIN, REFRESH_WAIT_MAX);
+  log(`🔄 Belum ada mutualan baru${skipped}. Refresh Beranda dalam ${wait} detik ` +
+    `(${emptyRefreshes}/${MAX_EMPTY_REFRESHES})...`);
+  await sleep(wait * 1000);
+  if (!running) return;   // Stop manual selama jeda
+  await chrome.storage.local.set({ resume: { stats: state.stats, emptyRefreshes } });
+  await saveState();
+  reloading = true;   // sapuan popup tidak perlu: reload menghapus semuanya
+  running = false;
+  location.assign('/');
+}
+
 async function run() {
   const me = myUsername();
   let idleScrolls = 0;
@@ -1065,15 +1086,18 @@ async function run() {
       // baru kembali terlihat: feed akan memuat lagi, jadi kuota idle scroll dimulai dari nol
       if (hiddenIdleLogged) { hiddenIdleLogged = false; idleScrolls = 0; }
       if (++idleScrolls > MAX_IDLE_SCROLLS) {
-        return stop(noFollowSkips
-          ? `Tidak ada postingan mutualan baru (${noFollowSkips} dilewati: tidak bisa difollow)`
-          : 'Tidak ada postingan mutualan baru');
+        const skipped = noFollowSkips ? ` (${noFollowSkips} dilewati: tidak bisa difollow)` : '';
+        if (emptyRefreshes >= MAX_EMPTY_REFRESHES) {
+          return stop(`Tidak ada postingan mutualan baru setelah ${MAX_EMPTY_REFRESHES}x refresh${skipped}`);
+        }
+        return refreshForNewPosts(skipped);
       }
       window.scrollBy({ top: window.innerHeight * 0.8, behavior: scrollBehavior() });
       await sleep(rand(2000, 3500));
       continue;
     }
     idleScrolls = 0;
+    emptyRefreshes = 0;
 
     const { card, post } = target;
     card.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
@@ -1128,6 +1152,7 @@ async function start(resume = null, startMode = 'follow') {
   settings = { ...THREADS_BOT_DEFAULTS, ...(data.settings || {}) };
   processed = new Set(data.processed || []);
   mode = resume ? 'follow' : startMode;   // resume hanya dipakai mode follow
+  emptyRefreshes = resume?.emptyRefreshes || 0;
   state = {
     running: true,
     mode,
