@@ -35,9 +35,9 @@ Bot akan:
 4. Mencari lagi postingan tadi, lalu **membalas** dengan komentar acak
 5. Menutup popup lagi, kembali ke Beranda, jeda, lalu **ulangi** ke postingan berikutnya
 6. Scroll otomatis kalau tidak ada postingan yang cocok di layar
-7. Kalau setelah 15 kali scroll tidak ada mutualan baru, bot **refresh Beranda** (jeda 20–45 detik dulu) lalu lanjut otomatis, diulang sampai ketemu mutualan baru
-8. Berhenti sendiri kalau: batas aksi tercapai, 30 kali refresh beruntun tetap tidak ada mutualan baru, muncul peringatan limit dari Threads, atau ada jendela/dialog yang menutupi halaman dan tidak bisa ditutup
-8. Setelah berhenti (termasuk kalau kamu klik **Stop**), bot menyapu popup yang masih tersisa supaya layar bersih — lihat log `🧹 Membersihkan ... popup sisa`
+7. Kalau postingan yang ter-load habis, bot **tidak berhenti**: dia menunggu, menyegarkan Beranda, lalu lanjut mencari — **tanpa batas berapa kali**, sampai ada yang ngajak mutualan. Feed yang sepi bukan alasan berhenti, cuma alasan menunggu lebih lama (lihat di bawah)
+8. Berhenti sendiri kalau: batas aksi tercapai, muncul peringatan limit dari Threads, atau ada jendela/dialog yang menutupi halaman dan tidak bisa ditutup. Tidak ada yang cocok di feed **tidak** membuatnya berhenti
+9. Setelah berhenti (termasuk kalau kamu klik **Stop**), bot menyapu popup yang masih tersisa supaya layar bersih — lihat log `🧹 Membersihkan ... popup sisa`
 
 Kalau kembali ke Beranda tanpa reload gagal, bot me-reload ke `threads.com/` dan **melanjutkan otomatis** (statistik tetap tersambung).
 
@@ -105,6 +105,8 @@ icons/          ikon extension
 | **Semua** postingan dilewati dengan "tombol follow tidak ada", tidak ada yang diproses | Kemungkinan Threads mengubah label tombol follow-nya. Sesuaikan `RE.follow` di atas `content.js`, lalu reload extension. Bot sengaja memilih melewati semuanya daripada mengomentari akun yang sudah kamu follow. Alasan berhenti juga menyebutkan jumlahnya. |
 | "Bot tidak merespons (N menit terakhir diam)" | Tab Threads-nya kemungkinan dibuang Chrome untuk hemat memori. Refresh tab itu lalu Start lagi. Kalau sering kejadian, matikan Memory Saver untuk situs ini di `chrome://settings/performance`. |
 | Log: "teks komentar gagal dimasukkan" | Threads menolak teks yang disisipkan — biasanya karena tabnya tidak fokus. Komentar itu sengaja dibatalkan supaya tidak terkirim kosong. Coba jalankan dengan tab Threads terlihat. |
+| Log: "Postingan habis. Tunggu ... lalu segarkan feed" | Normal, bukan error. Postingan yang ter-load sudah dicek semua, jadi bot menunggu lalu menyegarkan Beranda untuk mencari yang baru, berulang terus tanpa batas. Jedanya mulai 1–3 menit dan **memanjang sendiri** (maksimal 10 menit) kalau beberapa kali berturut-turut tetap tidak ada yang cocok — supaya ada waktu postingan baru terkumpul dan pola aksesnya tidak terlihat seperti bot. Begitu dapat satu, jedanya balik pendek lagi. |
+| Log: "⚠️ N postingan mutualan dilewati & belum ada satu pun yang diproses" | Ini **perlu dicek**. Bot menemukan postingan mutualan tapi tombol follow-nya tidak pernah ketemu, jadi semuanya dilewati — biasanya karena Threads mengubah label tombol Follow. Sesuaikan `RE.follow` di atas `content.js`, lalu reload extension. Dulu kondisi ini membuat bot berhenti; sekarang bot lanjut mencari, jadi peringatan inilah satu-satunya tandanya. |
 | Log: "Tab tersembunyi & postingan yang ter-load habis" | Normal, bukan error. Feed Threads tidak memuat postingan baru selama tab tersembunyi. Buka tabnya sebentar, bot lanjut sendiri. |
 | "Daftar pengikut/mengikuti tidak bisa dibuka" | Bot gagal menemukan tautan daftarnya di halaman profil. Threads kemungkinan mengubah labelnya — sesuaikan `RE.followersNav` / `RE.followingNav` di atas `content.js`. |
 | Mode unfollow: "barisnya tidak ketemu di daftar" | Daftarnya bergeser lebih cepat dari yang bot kira. Tidak berbahaya: akun itu dilewati, dan akan kena di sesi berikutnya. |
