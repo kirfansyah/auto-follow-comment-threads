@@ -34,6 +34,7 @@ Bot akan:
 3. Menutup popup yang muncul — Esc → klik area kosong → tombol "Buang" → tombol tutup popup-nya — lalu kembali ke **Beranda** kalau sempat pindah halaman
 4. Mencari lagi postingan tadi, lalu **membalas** dengan komentar acak
 5. Menutup popup lagi, kembali ke Beranda, jeda, lalu **ulangi** ke postingan berikutnya
+   - Kembali ke Beranda dianggap selesai hanya kalau **postingannya sudah muncul**, bukan sekadar URL-nya sudah berganti. Tombol "Balas" Threads membuka halaman detail postingan, jadi tiap habis berkomentar bot memang harus pulang dulu — dan kalau pemindaian dimulai sebelum feed-nya tergambar, bot salah menyimpulkan "postingan habis" padahal cuma belum termuat
 6. Scroll otomatis kalau tidak ada postingan yang cocok di layar
 7. Kalau postingan yang ter-load habis, bot **tidak berhenti**: dia menunggu, menyegarkan Beranda, lalu lanjut mencari — **tanpa batas berapa kali**, sampai ada yang ngajak mutualan. Feed yang sepi bukan alasan berhenti, cuma alasan menunggu lebih lama (lihat di bawah)
 8. Berhenti sendiri kalau: batas aksi tercapai, muncul peringatan limit dari Threads, atau ada jendela/dialog yang menutupi halaman dan tidak bisa ditutup. Tidak ada yang cocok di feed **tidak** membuatnya berhenti

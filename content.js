@@ -220,6 +220,14 @@ function isLoggedIn() {
 
 const isHome = () => location.pathname === '/' || location.pathname === '';
 
+// Beranda siap dipakai BUKAN cuma soal URL. Threads itu SPA: isHome() hanya membaca
+// location.pathname, jadi menunggu isHome() saja akan lolos begitu URL-nya berganti —
+// padahal kartu postingannya belum ter-render sama sekali. Loop lalu memindai feed kosong,
+// menghabiskan kuota idleScrolls, dan menyimpulkan "postingan habis" padahal cuma belum
+// termuat. Jadi: tunggu URL-nya DAN isinya. (Bandingkan IIFE `resume` di bawah, yang sejak
+// awal sudah memakai syarat lengkap ini.)
+const homeReady = () => isHome() && getPosts().length > 0;
+
 function limitDetected() {
   for (const d of document.querySelectorAll('[role="dialog"], [role="alert"]')) {
     if (RE.limited.test(d.innerText || '')) return true;
@@ -778,13 +786,17 @@ async function goHome() {
   if (isHome()) return true;
   const nav = findClickable(document, RE.homeNav) ||
     [...document.querySelectorAll('a[href="/"]')].find(visible);
+  // homeReady, bukan isHome: kembali ke Beranda belum selesai selama feed-nya belum muncul.
+  // Timeout-nya 10 detik karena sekarang yang ditunggu isi, bukan cuma pergantian URL.
   if (nav) {
     realClick(nav);
-    if (await waitFor(isHome, 6000)) { await sleep(rand(1500, 2500)); return true; }
+    if (await waitFor(homeReady, 10000)) { await sleep(rand(1500, 2500)); return true; }
   }
   history.back();
-  if (await waitFor(isHome, 6000)) { await sleep(rand(1500, 2500)); return true; }
-  // terakhir: reload ke Beranda, bot lanjut otomatis setelah halaman termuat
+  if (await waitFor(homeReady, 10000)) { await sleep(rand(1500, 2500)); return true; }
+  // Sampai sini URL-nya bisa saja sudah '/' tapi feed-nya tetap kosong — itu Beranda yang tidak
+  // bisa dipakai, jadi jangan dianggap sukses lalu dipindai. Reload sungguhan sebagai jalan
+  // terakhir; bot lanjut otomatis setelah halaman termuat.
   await saveResume();
   log('↩️ Reload ke Beranda, bot lanjut otomatis...');
   reloading = true;   // sapuan popup tidak perlu: reload menghapus semuanya
@@ -1092,6 +1104,12 @@ async function run() {
     if (!running) return;
     if (limitDetected()) return stop('Terdeteksi limit dari Threads, istirahat dulu');
 
+    // Feed belum ter-render — baru pindah halaman, atau Start ditekan saat Beranda masih
+    // memuat. Beri waktu dulu: memindainya sekarang menghasilkan "tidak ada postingan" yang
+    // palsu dan memakan kuota idleScrolls. Kalau tetap kosong, JANGAN ditahan di sini —
+    // dibiarkan jatuh ke penanganan idle di bawah supaya feed-nya disegarkan seperti biasa.
+    if (!getPosts().length) await waitFor(() => getPosts().length, 10000);
+
     let target = null;
     for (const card of getPosts()) {
       const post = parsePost(card);
@@ -1298,7 +1316,7 @@ document.addEventListener('visibilitychange', () => {
     const { botState } = await chrome.storage.local.get('botState');
     if (botState) await chrome.storage.local.set({ botState: { ...botState, running: false, reason } });
   };
-  if (!(await waitFor(() => isHome() && getPosts().length, 15000))) return fail('Beranda tidak termuat setelah reload');
+  if (!(await waitFor(homeReady, 15000))) return fail('Beranda tidak termuat setelah reload');
   await delay(2000);
   const res = await start(resume);
   if (!res.ok) await fail(res.error);
